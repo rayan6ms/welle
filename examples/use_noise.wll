@@ -1,0 +1,11 @@
+import "std:noise" as noise
+
+scale = 16
+time = 0
+
+vals = []
+for (i = 0; i < 8; i = i + 1) {
+  vals = append(vals, noise.noise2(i * 5, 10, scale, time))
+}
+
+print(vals)

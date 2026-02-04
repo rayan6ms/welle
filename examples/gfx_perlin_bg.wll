@@ -1,0 +1,113 @@
+import "std:gfx" as gfx
+import "std:image" as image
+import "std:noise" as noise
+import "std:color" as color
+import "std:rand" as rand
+import "std:math" as math
+
+W = 1280
+H = 720
+CELL = 20
+
+img = nil
+
+c1 = nil
+c2 = nil
+c3 = nil
+c4 = nil
+
+next_palette_at = 0.0
+
+phase = 0.0
+
+SPEED = 0.18
+
+NOISE_SCALE_INV = 500
+
+func rand_color() {
+  return color.rgb(rand.int(256), rand.int(256), rand.int(256))
+}
+
+func select_palette() {
+  c1 = rand_color()
+  c2 = rand_color()
+  c3 = rand_color()
+  c4 = rand_color()
+
+  while (color.distance(c1, c2) < 50) { c2 = rand_color() }
+
+  while (color.distance(c1, c3) < 50) {
+    c3 = rand_color()
+  }
+  while (color.distance(c2, c3) < 50) {
+    c3 = rand_color()
+  }
+
+  while (color.distance(c1, c4) < 50) {
+    c4 = rand_color()
+  }
+  while (color.distance(c2, c4) < 50) {
+    c4 = rand_color()
+  }
+  while (color.distance(c3, c4) < 50) {
+    c4 = rand_color()
+  }
+}
+
+func setup() {
+  rand.seed(1337)
+  gfx.open(W, H, "Welle Perlin Background (smooth)")
+  img = image.new(W, H)
+  select_palette()
+  next_palette_at = gfx.time() + 600.0
+  phase = 0.0
+}
+
+func update(dt) {
+  phase = phase + (dt * SPEED)
+}
+
+func lerp4(v) {
+  seg_size = 334
+
+  seg = v / seg_size
+  if (seg > 2) { seg = 2 }
+
+  blend = (v - (seg * seg_size)) * 1000 / seg_size
+  if (blend < 0) { blend = 0 }
+  if (blend > 1000) { blend = 1000 }
+
+  if (seg == 0) {
+    return color.lerp(c1, c2, blend)
+  }
+  if (seg == 1) {
+    return color.lerp(c2, c3, blend)
+  }
+  return color.lerp(c3, c4, blend)
+}
+
+func draw() {
+  gfx.begin_frame()
+
+  image.fade_white(img, 25.0 / 255.0)
+
+  xoff = math.floor(phase * NOISE_SCALE_INV)
+
+  y = 0
+  while (y < H) {
+    x = 0
+    while (x < W) {
+      u = x + xoff
+      v = noise.noise2(u, y, NOISE_SCALE_INV, 0)
+
+      cc = lerp4(v)
+      image.fill_rect(img, x, y, CELL, CELL, cc["r"], cc["g"], cc["b"], 255)
+
+      x = x + CELL
+    }
+    y = y + CELL
+  }
+
+  gfx.present(img)
+  gfx.end_frame()
+}

@@ -1,0 +1,20 @@
+import "std:gfx" as gfx
+import "std:math" as math
+
+func setup() {
+  gfx.open(640, 360, "Welle GFX Demo")
+}
+
+func update(dt) {
+  // dt available for animation logic if needed
+}
+
+func draw() {
+  t = gfx.time()
+  gfx.begin_frame()
+  gfx.clear(20, 20, 30, 255)
+  x = 280 + (math.sin(t) * 120)
+  y = 160 + (math.cos(t) * 60)
+  gfx.rect(x, y, 80, 40, 255, 120, 30, 255)
+  gfx.end_frame()
+}

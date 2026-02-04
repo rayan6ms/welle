@@ -1,0 +1,10 @@
+print(len("cafe"))
+a = [1, 2]
+a2 = push(a, 3)
+print(a)
+print(a2)
+
+d = {"a": 1, 2: "two", true: 9}
+print(keys(d))
+print(values(d))
+print(str(123))

@@ -1,0 +1,2 @@
+import "std:math" as math
+print(math.add(2, 3))

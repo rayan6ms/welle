@@ -1,0 +1,115 @@
+{
+  "name": "welle",
+  "displayName": "Welle",
+  "description": "Language support for Welle (.wll)",
+  "version": "0.3.2",
+  "publisher": "welle",
+  "icon": "media/welle.png",
+  "scripts": {
+    "build:lsp": "cd .. && go build -o vscode-welle/server/welle-lsp ./cmd/welle-lsp",
+    "vscode:prepublish": "npm run build:lsp && chmod +x server/welle-lsp"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rayan6ms/welle.git"
+  },
+  "homepage": "https://github.com/rayan6ms/welle#readme",
+  "bugs": {
+    "url": "https://github.com/rayan6ms/welle/issues"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:welle"
+  ],
+  "main": "./client/extension.js",
+  "license": "GPL-3.0-or-later",
+  "contributes": {
+    "languages": [
+      {
+        "id": "welle",
+        "aliases": [
+          "Welle",
+          "welle"
+        ],
+        "extensions": [
+          ".wll"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "welle",
+        "scopeName": "source.welle",
+        "path": "./syntaxes/welle.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Welle",
+      "properties": {
+        "welle.lspPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the welle-lsp executable. If empty, uses <workspace>/bin/welle-lsp or falls back to PATH."
+        }
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "welle",
+        "scopes": {
+          "keyword": [
+            "keyword.control"
+          ],
+          "string": [
+            "string.quoted"
+          ],
+          "number": [
+            "constant.numeric"
+          ],
+          "operator": [
+            "keyword.operator"
+          ],
+          "function": [
+            "entity.name.function"
+          ],
+          "function.declaration": [
+            "entity.name.function"
+          ],
+          "variable": [
+            "variable.other.readwrite"
+          ],
+          "variable.declaration": [
+            "variable.other.readwrite"
+          ],
+          "variable.readonly": [
+            "variable.other.constant"
+          ],
+          "parameter": [
+            "variable.parameter"
+          ],
+          "parameter.declaration": [
+            "variable.parameter"
+          ],
+          "namespace": [
+            "entity.name.namespace"
+          ],
+          "type": [
+            "storage.type"
+          ],
+          "comment": [
+            "comment.line"
+          ]
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

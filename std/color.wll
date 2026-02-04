@@ -1,0 +1,45 @@
+func clamp_t(t) {
+  if (t < 0) {
+    return 0
+  }
+  if (t > 1000) {
+    return 1000
+  }
+  return t
+}
+
+func lerp_int(a, b, t) {
+  return a + ((b - a) * t) / 1000
+}
+
+func isqrt(n) {
+  if (n <= 0) {
+    return 0
+  }
+  x = n
+  y = (x + 1) / 2
+  while (y < x) {
+    x = y
+    y = (x + (n / x)) / 2
+  }
+  return x
+}
+
+export func rgb(r, g, b) {
+  return #{"r": r, "g": g, "b": b}
+}
+
+export func lerp(c1, c2, t) {
+  t = clamp_t(t)
+  r = lerp_int(c1["r"], c2["r"], t)
+  g = lerp_int(c1["g"], c2["g"], t)
+  b = lerp_int(c1["b"], c2["b"], t)
+  return #{"r": r, "g": g, "b": b}
+}
+
+export func distance(c1, c2) {
+  dr = c1["r"] - c2["r"]
+  dg = c1["g"] - c2["g"]
+  db = c1["b"] - c2["b"]
+  return isqrt((dr * dr) + (dg * dg) + (db * db))
+}

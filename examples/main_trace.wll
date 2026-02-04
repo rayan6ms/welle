@@ -1,0 +1,3 @@
+import "lib.wll"
+func wrap() { return boom() }
+wrap()

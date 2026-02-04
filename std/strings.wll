@@ -1,0 +1,2 @@
+export func length(s) { return len(s) }
+export func is_empty(s) { return len(s) == 0 }

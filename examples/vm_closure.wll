@@ -1,0 +1,7 @@
+func makeAdder(x) {
+  func add(y) { return x + y }
+  return add
+}
+
+add10 = makeAdder(10)
+print(add10(2))

@@ -1,0 +1,45 @@
+import "std:gfx" as gfx
+import "std:image" as image
+import "std:noise" as noise
+import "std:color" as color
+import "std:math" as math
+
+width = 320
+height = 240
+img = nil
+
+palette = [
+  color.rgb(12, 20, 32),
+  color.rgb(24, 60, 96),
+  color.rgb(96, 180, 200),
+  color.rgb(240, 250, 255),
+]
+
+func setup() {
+  gfx.open(width, height, "Welle GFX Perlin Image")
+  img = image.new(width, height)
+}
+
+func draw() {
+  gfx.begin_frame()
+
+  t = math.floor(gfx.time() * 6)
+  scale = 48
+  seg_size = 334
+
+  for (y = 0; y < height; y = y + 1) {
+    for (x = 0; x < width; x = x + 1) {
+      v = noise.noise2(x + (t * 2), y + t, scale, t)
+      seg = v / seg_size
+      if (seg > 2) { seg = 2 }
+      blend = (v - (seg * seg_size)) * 1000 / seg_size
+      c1 = palette[seg]
+      c2 = palette[seg + 1]
+      c = color.lerp(c1, c2, blend)
+      image.set(img, x, y, c["r"], c["g"], c["b"], 255)
+    }
+  }
+
+  gfx.present(img)
+  gfx.end_frame()
+}

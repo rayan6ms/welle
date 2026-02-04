@@ -1,0 +1,67 @@
+import "std:gfx" as gfx
+import "std:image" as image
+import "std:noise" as noise
+import "std:color" as color
+import "std:rand" as rand
+import "std:math" as math
+
+W = 640
+H = 360
+CELL = 8
+
+img = nil
+c1 = nil
+c2 = nil
+
+func rand_color() {
+  return color.rgb(rand.int(256), rand.int(256), rand.int(256))
+}
+
+func select_palette() {
+  c1 = rand_color()
+  c2 = rand_color()
+  while (color.distance(c1, c2) < 80) {
+    c2 = rand_color()
+  }
+}
+
+func setup() {
+  rand.seed(2026)
+  gfx.open(W, H, "Welle Perlin Trails")
+  img = image.new(W, H)
+  image.fill(img, 0, 0, 0, 255)
+  select_palette()
+}
+
+func draw() {
+  gfx.begin_frame()
+
+  image.fade(img, 0.08)
+
+  t = gfx.time()
+  scale = 400
+  time_i = math.floor(t * 6.0)
+
+  y = 0
+  while (y < H) {
+    x = 0
+    while (x < W) {
+      v = noise.noise2(x + (time_i * 2), y + time_i, scale, time_i)
+      if (v > 650) {
+        blend = (v - 650) * 1000 / 350
+        cc = color.lerp(c1, c2, blend)
+        image.fill_rect(img, x, y, CELL, CELL, cc["r"], cc["g"], cc["b"], 255)
+      }
+      x = x + CELL
+    }
+    y = y + CELL
+  }
+
+  gfx.present(img)
+  gfx.end_frame()
+}
+
+setup()
+while (not gfx.should_close()) {
+  draw()
+}

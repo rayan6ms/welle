@@ -1,0 +1,41 @@
+func abs_int(n) {
+  if (n < 0) { return -n }
+  return n
+}
+
+func is_palindrome(n) {
+  if (n < 0) { return false }
+
+  if (n >= 0 and n < 10) { return true }
+
+  original = n
+  rev = 0
+
+  while (n > 0) {
+    digit = n % 10
+    rev = (rev * 10) + digit
+    n = n / 10
+  }
+
+  return rev == original
+}
+
+func assert_eq(label, got, want) {
+  if (got != want) {
+    throw "assert failed: " + label
+  }
+}
+
+assert_eq("121", is_palindrome(121), true)
+assert_eq("123", is_palindrome(123), false)
+assert_eq("0", is_palindrome(0), true)
+assert_eq("7", is_palindrome(7), true)
+assert_eq("10", is_palindrome(10), false)
+assert_eq("1221", is_palindrome(1221), true)
+assert_eq("1001", is_palindrome(1001), true)
+assert_eq("-121", is_palindrome(-121), false)
+
+print("121: ", is_palindrome(121))
+print("123: ", is_palindrome(123))
+print("1221: ", is_palindrome(1221))
+print("10: ", is_palindrome(10))

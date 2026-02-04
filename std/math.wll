@@ -1,0 +1,6 @@
+export func add(a, b) { return a + b }
+export func sub(a, b) { return a - b }
+export func floor(x) { return math_floor(x) }
+export func sqrt(x) { return math_sqrt(x) }
+export func sin(x) { return math_sin(x) }
+export func cos(x) { return math_cos(x) }

@@ -1,0 +1,29 @@
+import "std:gfx" as gfx
+import "std:noise" as noise
+import "std:color" as color
+import "std:math" as math
+
+func setup() {
+  gfx.open(320, 320, "Welle GFX Noise")
+}
+
+func draw() {
+  gfx.begin_frame()
+  gfx.clear(12, 16, 24, 255)
+
+  t = math.floor(gfx.time() * 8)
+  cell = 8
+  scale = 32
+  c1 = color.rgb(24, 40, 80)
+  c2 = color.rgb(230, 240, 255)
+
+  for (y in range(0, 320, cell)) {
+    for (x in range(0, 320, cell)) {
+      v = noise.noise2(x, y, scale, t)
+      c = color.lerp(c1, c2, v)
+      gfx.rect(x, y, cell, cell, c["r"], c["g"], c["b"], 255)
+    }
+  }
+
+  gfx.end_frame()
+}

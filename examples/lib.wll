@@ -1,0 +1,1 @@
+func boom() { return 10 / 0 }

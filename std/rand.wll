@@ -1,0 +1,34 @@
+rand_state = 1
+rand_mod = 2147483647
+rand_mul = 48271
+
+func next_rand() {
+  rand_state = (rand_state * rand_mul) % rand_mod
+  return rand_state
+}
+
+export func seed(n) {
+  rand_state = n % rand_mod
+  if (rand_state < 0) {
+    rand_state = -rand_state
+  }
+  if (rand_state == 0) {
+    rand_state = 1
+  }
+}
+
+export func int(max) {
+  if (max <= 0) {
+    return 0
+  }
+  n = next_rand()
+  return n % max
+}
+
+export func range(min, max) {
+  if (max <= min) {
+    return min
+  }
+  n = next_rand()
+  return min + (n % (max - min))
+}

@@ -1,0 +1,4 @@
+import "math.wll" as math
+print(math.add(2, 3))
+print(math.PI)
+print(math.tmp)

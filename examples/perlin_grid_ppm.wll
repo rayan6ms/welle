@@ -1,0 +1,28 @@
+import "std:noise" as noise
+import "std:color" as color
+
+width = 64
+height = 64
+scale = 12
+time = 0
+
+c1 = color.rgb(20, 30, 80)
+c2 = color.rgb(240, 240, 200)
+
+out = "P3\n" + str(width) + " " + str(height) + "\n255\n"
+
+y = 0
+while (y < height) {
+  x = 0
+  line = ""
+  while (x < width) {
+    n = noise.noise2(x, y, scale, time)
+    col = color.lerp(c1, c2, n)
+    line = line + str(col["r"]) + " " + str(col["g"]) + " " + str(col["b"]) + " "
+    x = x + 1
+  }
+  out = out + line + "\n"
+  y = y + 1
+}
+
+print(out)

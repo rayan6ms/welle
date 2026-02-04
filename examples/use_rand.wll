@@ -1,0 +1,5 @@
+import "std:rand" as rand
+
+rand.seed(123)
+print(rand.int(10))
+print(rand.range(5, 10))

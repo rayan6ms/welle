@@ -1,0 +1,13 @@
+export func open(w, h, title) { gfx_open(w, h, title) }
+export func close() { gfx_close() }
+export func should_close() { return gfx_shouldClose() }
+export func begin_frame() { gfx_beginFrame() }
+export func end_frame() { gfx_endFrame() }
+export func clear(r, g, b, a) { gfx_clear(r, g, b, a) }
+export func rect(x, y, w, h, r, g, b, a) { gfx_rect(x, y, w, h, r, g, b, a) }
+export func pixel(x, y, r, g, b, a) { gfx_pixel(x, y, r, g, b, a) }
+export func time() { return gfx_time() }
+export func key_down(k) { return gfx_keyDown(k) }
+export func mouse_x() { return gfx_mouseX() }
+export func mouse_y() { return gfx_mouseY() }
+export func present(img) { gfx_present(img) }

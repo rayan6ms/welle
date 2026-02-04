@@ -1,0 +1,51 @@
+func lerp_int(a, b, t) {
+  return a + ((b - a) * t) / 1000
+}
+
+func fade(t) {
+  t2 = (t * t) / 1000
+  t3 = (t2 * t) / 1000
+  return (3 * t2) - (2 * t3)
+}
+
+func hash2(x, y, time) {
+  h = (x * 1619) + (y * 31337) + (time * 6971) + 1013
+  h = h % 2147483647
+  if (h < 0) {
+    h = -h
+  }
+  h = (h * 1013) % 2147483647
+  if (h < 0) {
+    h = -h
+  }
+  return h % 1001
+}
+
+export func noise2(x, y, scale, time) {
+  if (scale <= 0) {
+    scale = 1
+  }
+
+  x0 = x / scale
+  y0 = y / scale
+  x1 = x0 + 1
+  y1 = y0 + 1
+
+  fx = x - (x0 * scale)
+  fy = y - (y0 * scale)
+
+  tx = (fx * 1000) / scale
+  ty = (fy * 1000) / scale
+
+  v00 = hash2(x0, y0, time)
+  v10 = hash2(x1, y0, time)
+  v01 = hash2(x0, y1, time)
+  v11 = hash2(x1, y1, time)
+
+  u = fade(tx)
+  v = fade(ty)
+
+  a = lerp_int(v00, v10, u)
+  b = lerp_int(v01, v11, u)
+  return lerp_int(a, b, v)
+}

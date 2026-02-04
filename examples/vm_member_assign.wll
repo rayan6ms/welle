@@ -1,0 +1,5 @@
+cfg = {}
+cfg.debug = true
+cfg.port = 3000
+print(cfg.debug)
+print(cfg.port)

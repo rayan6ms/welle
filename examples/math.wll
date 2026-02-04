@@ -1,0 +1,5 @@
+export PI = 3
+export func add(a, b) { return a + b }
+
+tmp = 99
+func helper() { return 0 }

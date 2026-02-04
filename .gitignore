@@ -1,0 +1,32 @@
+# Go build outputs
+/bin/
+/dist/
+/build/
+/target/
+
+# Go test artifacts
+*.test
+*.out
+.coverprofile
+coverage/
+
+# OS / editor
+.DS_Store
+*.swp
+*.tmp
+*.log
+.vscode/
+
+# Node / VS Code extension
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# VSCE packaged artifacts
+vscode-welle/*.vsix
+
+# Bundled server binary
+vscode-welle/server/welle-lsp
+
+.vscode-test/

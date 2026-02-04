@@ -1,0 +1,8 @@
+d = {}
+d["a"] = 1
+d[1] = "one"
+d[true] = 99
+
+print(d["a"])
+print(d[1])
+print(d[true])

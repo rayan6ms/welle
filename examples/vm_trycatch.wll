@@ -1,0 +1,19 @@
+try {
+  print(10 / 0)
+  print("nope")
+} catch (e) {
+  print("caught")
+  print(e.message)
+}
+print("after")
+
+try {
+  try {
+    print(1 / 0)
+  } catch (e) {
+    print("inner")
+  }
+  print(1 / 0)
+} catch (e) {
+  print("outer")
+}

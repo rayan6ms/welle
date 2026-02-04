@@ -1,0 +1,822 @@
+package vm
+
+import (
+	"fmt"
+	"math"
+	"os"
+	"sort"
+	"unicode/utf8"
+
+	"welle/internal/gfx"
+	"welle/internal/object"
+)
+
+var builtins = []*object.Builtin{
+	{Fn: builtinPrint},          // index 0
+	{Fn: builtinLen},            // 1
+	{Fn: builtinStr},            // 2
+	{Fn: builtinKeys},           // 3
+	{Fn: builtinValues},         // 4
+	{Fn: builtinPush},           // 5
+	{Fn: builtinError},          // 6
+	{Fn: builtinRange},          // 7
+	{Fn: builtinHasKey},         // 8
+	{Fn: builtinSort},           // 9
+	{Fn: builtinWriteFile},      // 10
+	{Fn: builtinMathFloor},      // 11
+	{Fn: builtinMathSqrt},       // 12
+	{Fn: builtinMathSin},        // 13
+	{Fn: builtinMathCos},        // 14
+	{Fn: builtinGfxOpen},        // 15
+	{Fn: builtinGfxClose},       // 16
+	{Fn: builtinGfxShouldClose}, // 17
+	{Fn: builtinGfxBeginFrame},  // 18
+	{Fn: builtinGfxEndFrame},    // 19
+	{Fn: builtinGfxClear},       // 20
+	{Fn: builtinGfxRect},        // 21
+	{Fn: builtinGfxPixel},       // 22
+	{Fn: builtinGfxTime},        // 23
+	{Fn: builtinGfxKeyDown},     // 24
+	{Fn: builtinGfxMouseX},      // 25
+	{Fn: builtinGfxMouseY},      // 26
+	{Fn: builtinGfxPresent},     // 27
+	{Fn: builtinImageNew},       // 28
+	{Fn: builtinImageSet},       // 29
+	{Fn: builtinImageFill},      // 30
+	{Fn: builtinImageWidth},     // 31
+	{Fn: builtinImageHeight},    // 32
+	{Fn: builtinImageFillRect},  // 33
+	{Fn: builtinImageFade},      // 34
+	{Fn: builtinImageFadeWhite}, // 35
+}
+
+var builtinIndex = map[string]int{
+	"print":            0,
+	"len":              1,
+	"str":              2,
+	"keys":             3,
+	"values":           4,
+	"push":             5,
+	"append":           5,
+	"error":            6,
+	"range":            7,
+	"hasKey":           8,
+	"sort":             9,
+	"writeFile":        10,
+	"math_floor":       11,
+	"math_sqrt":        12,
+	"math_sin":         13,
+	"math_cos":         14,
+	"gfx_open":         15,
+	"gfx_close":        16,
+	"gfx_shouldClose":  17,
+	"gfx_beginFrame":   18,
+	"gfx_endFrame":     19,
+	"gfx_clear":        20,
+	"gfx_rect":         21,
+	"gfx_pixel":        22,
+	"gfx_time":         23,
+	"gfx_keyDown":      24,
+	"gfx_mouseX":       25,
+	"gfx_mouseY":       26,
+	"gfx_present":      27,
+	"image_new":        28,
+	"image_set":        29,
+	"image_fill":       30,
+	"image_width":      31,
+	"image_height":     32,
+	"image_fill_rect":  33,
+	"image_fade":       34,
+	"image_fade_white": 35,
+}
+
+func builtinPrint(args ...object.Object) object.Object {
+	for i, a := range args {
+		if i > 0 {
+			print(" ")
+		}
+		print(a.Inspect())
+	}
+	println()
+	return nilObj
+}
+
+func builtinLen(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "len expects 1 argument"}
+	}
+	switch v := args[0].(type) {
+	case *object.String:
+		return &object.Integer{Value: int64(utf8.RuneCountInString(v.Value))}
+	case *object.Array:
+		return &object.Integer{Value: int64(len(v.Elements))}
+	case *object.Dict:
+		return &object.Integer{Value: int64(len(v.Pairs))}
+	default:
+		return &object.Error{Message: "len unsupported for type: " + string(args[0].Type())}
+	}
+}
+
+func builtinStr(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "str expects 1 argument"}
+	}
+	return &object.String{Value: args[0].Inspect()}
+}
+
+func builtinKeys(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "keys expects 1 argument"}
+	}
+	d, ok := args[0].(*object.Dict)
+	if !ok {
+		return &object.Error{Message: "keys expects DICT"}
+	}
+	ks := make([]string, 0, len(d.Pairs))
+	for k := range d.Pairs {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	out := make([]object.Object, 0, len(ks))
+	for _, k := range ks {
+		out = append(out, d.Pairs[k].Key)
+	}
+	return &object.Array{Elements: out}
+}
+
+func builtinValues(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "values expects 1 argument"}
+	}
+	d, ok := args[0].(*object.Dict)
+	if !ok {
+		return &object.Error{Message: "values expects DICT"}
+	}
+	ks := make([]string, 0, len(d.Pairs))
+	for k := range d.Pairs {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	out := make([]object.Object, 0, len(ks))
+	for _, k := range ks {
+		out = append(out, d.Pairs[k].Value)
+	}
+	return &object.Array{Elements: out}
+}
+
+func builtinPush(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "push expects 2 arguments: (array, value)"}
+	}
+	a, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "push expects ARRAY as first argument"}
+	}
+	newElems := make([]object.Object, 0, len(a.Elements)+1)
+	newElems = append(newElems, a.Elements...)
+	newElems = append(newElems, args[1])
+	return &object.Array{Elements: newElems}
+}
+
+func builtinError(args ...object.Object) object.Object {
+	if len(args) < 1 || len(args) > 2 {
+		return &object.Error{Message: "error expects 1 or 2 arguments: (message, code?)"}
+	}
+
+	var msg string
+	switch v := args[0].(type) {
+	case *object.String:
+		msg = v.Value
+	default:
+		msg = v.Inspect()
+	}
+
+	errObj := &object.Error{Message: msg, IsValue: true}
+	if len(args) == 2 {
+		codeObj, ok := args[1].(*object.Integer)
+		if !ok {
+			return &object.Error{Message: "error code must be integer"}
+		}
+		errObj.Code = codeObj.Value
+	}
+
+	return errObj
+}
+
+func builtinRange(args ...object.Object) object.Object {
+	if len(args) != 1 && len(args) != 2 && len(args) != 3 {
+		return &object.Error{Message: "range expects 1, 2, or 3 arguments"}
+	}
+
+	toInt := func(o object.Object) (*object.Integer, bool) {
+		i, ok := o.(*object.Integer)
+		return i, ok
+	}
+
+	var start, end, step int64
+	step = 1
+
+	if len(args) == 1 {
+		n, ok := toInt(args[0])
+		if !ok {
+			return &object.Error{Message: "range expects INTEGER arguments"}
+		}
+		start = 0
+		end = n.Value
+	} else if len(args) == 2 {
+		a, ok1 := toInt(args[0])
+		b, ok2 := toInt(args[1])
+		if !ok1 || !ok2 {
+			return &object.Error{Message: "range expects INTEGER arguments"}
+		}
+		start = a.Value
+		end = b.Value
+	} else {
+		a, ok1 := toInt(args[0])
+		b, ok2 := toInt(args[1])
+		c, ok3 := toInt(args[2])
+		if !ok1 || !ok2 || !ok3 {
+			return &object.Error{Message: "range expects INTEGER arguments"}
+		}
+		start = a.Value
+		end = b.Value
+		step = c.Value
+		if step == 0 {
+			return &object.Error{Message: "range step cannot be 0"}
+		}
+	}
+
+	els := []object.Object{}
+	if step > 0 {
+		for i := start; i < end; i += step {
+			els = append(els, &object.Integer{Value: i})
+		}
+	} else {
+		for i := start; i > end; i += step {
+			els = append(els, &object.Integer{Value: i})
+		}
+	}
+
+	return &object.Array{Elements: els}
+}
+
+func builtinHasKey(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "hasKey expects 2 arguments"}
+	}
+	d, ok := args[0].(*object.Dict)
+	if !ok {
+		return &object.Error{Message: "hasKey expects DICT as first argument"}
+	}
+	hk, ok := object.HashKeyOf(args[1])
+	if !ok {
+		return &object.Error{Message: "unusable as dict key: " + string(args[1].Type())}
+	}
+	_, exists := d.Pairs[object.HashKeyString(hk)]
+	if exists {
+		return &object.Boolean{Value: true}
+	}
+	return &object.Boolean{Value: false}
+}
+
+func builtinSort(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "sort expects 1 argument"}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "sort expects ARRAY"}
+	}
+	els := make([]object.Object, len(arr.Elements))
+	copy(els, arr.Elements)
+	if len(els) < 2 {
+		return &object.Array{Elements: els}
+	}
+
+	switch els[0].Type() {
+	case object.INTEGER_OBJ:
+		for _, e := range els {
+			if e.Type() != object.INTEGER_OBJ {
+				return &object.Error{Message: "sort requires all elements to be INTEGER"}
+			}
+		}
+		ints := make([]int64, len(els))
+		for i, e := range els {
+			ints[i] = e.(*object.Integer).Value
+		}
+		sort.Slice(ints, func(i, j int) bool { return ints[i] < ints[j] })
+		out := make([]object.Object, len(ints))
+		for i, v := range ints {
+			out[i] = &object.Integer{Value: v}
+		}
+		return &object.Array{Elements: out}
+
+	case object.STRING_OBJ:
+		for _, e := range els {
+			if e.Type() != object.STRING_OBJ {
+				return &object.Error{Message: "sort requires all elements to be STRING"}
+			}
+		}
+		ss := make([]string, len(els))
+		for i, e := range els {
+			ss[i] = e.(*object.String).Value
+		}
+		sort.Strings(ss)
+		out := make([]object.Object, len(ss))
+		for i, v := range ss {
+			out[i] = &object.String{Value: v}
+		}
+		return &object.Array{Elements: out}
+	default:
+		return &object.Error{Message: "sort supports only INTEGER or STRING lists (v0.1)"}
+	}
+}
+
+func builtinWriteFile(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "writeFile expects 2 arguments: (path, content)"}
+	}
+	pathObj, ok := args[0].(*object.String)
+	if !ok {
+		return &object.Error{Message: "writeFile expects STRING path"}
+	}
+	contentObj, ok := args[1].(*object.String)
+	if !ok {
+		return &object.Error{Message: "writeFile expects STRING content"}
+	}
+	if err := os.WriteFile(pathObj.Value, []byte(contentObj.Value), 0644); err != nil {
+		return &object.Error{Message: "writeFile failed: " + err.Error()}
+	}
+	return nilObj
+}
+
+func builtinMathFloor(args ...object.Object) object.Object {
+	v, err := builtinFloatArg("math_floor", args...)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Integer{Value: int64(math.Floor(v))}
+}
+
+func builtinMathSqrt(args ...object.Object) object.Object {
+	v, err := builtinFloatArg("math_sqrt", args...)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Float{Value: math.Sqrt(v)}
+}
+
+func builtinMathSin(args ...object.Object) object.Object {
+	v, err := builtinFloatArg("math_sin", args...)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Float{Value: math.Sin(v)}
+}
+
+func builtinMathCos(args ...object.Object) object.Object {
+	v, err := builtinFloatArg("math_cos", args...)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Float{Value: math.Cos(v)}
+}
+
+func builtinFloatArg(name string, args ...object.Object) (float64, error) {
+	if len(args) != 1 {
+		return 0, fmt.Errorf("%s expects 1 argument", name)
+	}
+	switch v := args[0].(type) {
+	case *object.Integer:
+		return float64(v.Value), nil
+	case *object.Float:
+		return v.Value, nil
+	default:
+		return 0, fmt.Errorf("%s expects NUMBER", name)
+	}
+}
+
+func builtinGfxOpen(args ...object.Object) object.Object {
+	if len(args) != 3 {
+		return &object.Error{Message: "gfx_open expects 3 arguments: (width, height, title)"}
+	}
+	w, ok := args[0].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_open expects INTEGER width"}
+	}
+	h, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_open expects INTEGER height"}
+	}
+	title, ok := args[2].(*object.String)
+	if !ok {
+		return &object.Error{Message: "gfx_open expects STRING title"}
+	}
+	if err := gfx.Open(int(w.Value), int(h.Value), title.Value); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxClose(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_close expects no arguments"}
+	}
+	if err := gfx.Close(); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxShouldClose(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_shouldClose expects no arguments"}
+	}
+	return nativeBool(gfx.ShouldClose())
+}
+
+func builtinGfxBeginFrame(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_beginFrame expects no arguments"}
+	}
+	if err := gfx.BeginFrame(); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxEndFrame(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_endFrame expects no arguments"}
+	}
+	if err := gfx.EndFrame(); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxClear(args ...object.Object) object.Object {
+	if len(args) != 4 {
+		return &object.Error{Message: "gfx_clear expects 4 arguments: (r, g, b, a)"}
+	}
+	r, ok := gfxNumber(args[0])
+	if !ok {
+		return &object.Error{Message: "gfx_clear expects NUMBER channels"}
+	}
+	g, ok := gfxNumber(args[1])
+	if !ok {
+		return &object.Error{Message: "gfx_clear expects NUMBER channels"}
+	}
+	b, ok := gfxNumber(args[2])
+	if !ok {
+		return &object.Error{Message: "gfx_clear expects NUMBER channels"}
+	}
+	a, ok := gfxNumber(args[3])
+	if !ok {
+		return &object.Error{Message: "gfx_clear expects NUMBER channels"}
+	}
+	if err := gfx.Clear(r, g, b, a); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxRect(args ...object.Object) object.Object {
+	if len(args) != 8 {
+		return &object.Error{Message: "gfx_rect expects 8 arguments: (x, y, w, h, r, g, b, a)"}
+	}
+	x, ok := gfxNumber(args[0])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER position/size"}
+	}
+	y, ok := gfxNumber(args[1])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER position/size"}
+	}
+	w, ok := gfxNumber(args[2])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER position/size"}
+	}
+	h, ok := gfxNumber(args[3])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER position/size"}
+	}
+	r, ok := gfxNumber(args[4])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER channels"}
+	}
+	g, ok := gfxNumber(args[5])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER channels"}
+	}
+	b, ok := gfxNumber(args[6])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER channels"}
+	}
+	a, ok := gfxNumber(args[7])
+	if !ok {
+		return &object.Error{Message: "gfx_rect expects NUMBER channels"}
+	}
+	if err := gfx.Rect(x, y, w, h, r, g, b, a); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxPixel(args ...object.Object) object.Object {
+	if len(args) != 6 {
+		return &object.Error{Message: "gfx_pixel expects 6 arguments: (x, y, r, g, b, a)"}
+	}
+	x, ok := args[0].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER x/y"}
+	}
+	y, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER x/y"}
+	}
+	r, ok := args[2].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER channels"}
+	}
+	g, ok := args[3].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER channels"}
+	}
+	b, ok := args[4].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER channels"}
+	}
+	a, ok := args[5].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "gfx_pixel expects INTEGER channels"}
+	}
+	if err := gfx.Pixel(int(x.Value), int(y.Value), int(r.Value), int(g.Value), int(b.Value), int(a.Value)); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinGfxTime(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_time expects no arguments"}
+	}
+	v, err := gfx.TimeSeconds()
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Float{Value: v}
+}
+
+func builtinGfxKeyDown(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "gfx_keyDown expects 1 argument: (key)"}
+	}
+	key, ok := args[0].(*object.String)
+	if !ok {
+		return &object.Error{Message: "gfx_keyDown expects STRING key"}
+	}
+	v, err := gfx.KeyDown(key.Value)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nativeBool(v)
+}
+
+func builtinGfxMouseX(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_mouseX expects no arguments"}
+	}
+	v, err := gfx.MouseX()
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Integer{Value: int64(v)}
+}
+
+func builtinGfxMouseY(args ...object.Object) object.Object {
+	if len(args) != 0 {
+		return &object.Error{Message: "gfx_mouseY expects no arguments"}
+	}
+	v, err := gfx.MouseY()
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.Integer{Value: int64(v)}
+}
+
+func builtinGfxPresent(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "gfx_present expects 1 argument: (image)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "gfx_present expects IMAGE"}
+	}
+	if err := gfx.PresentRGBA(img.Width, img.Height, img.Data); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageNew(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "image_new expects 2 arguments: (width, height)"}
+	}
+	w, ok := args[0].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_new expects INTEGER width"}
+	}
+	h, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_new expects INTEGER height"}
+	}
+	img, err := object.NewImage(int(w.Value), int(h.Value))
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return img
+}
+
+func builtinImageSet(args ...object.Object) object.Object {
+	if len(args) != 7 {
+		return &object.Error{Message: "image_set expects 7 arguments: (image, x, y, r, g, b, a)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_set expects IMAGE"}
+	}
+	x, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER x/y"}
+	}
+	y, ok := args[2].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER x/y"}
+	}
+	r, ok := args[3].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER channels"}
+	}
+	g, ok := args[4].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER channels"}
+	}
+	b, ok := args[5].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER channels"}
+	}
+	a, ok := args[6].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_set expects INTEGER channels"}
+	}
+	if err := img.SetPixel(int(x.Value), int(y.Value), int(r.Value), int(g.Value), int(b.Value), int(a.Value)); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageFill(args ...object.Object) object.Object {
+	if len(args) != 5 {
+		return &object.Error{Message: "image_fill expects 5 arguments: (image, r, g, b, a)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_fill expects IMAGE"}
+	}
+	r, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill expects INTEGER channels"}
+	}
+	g, ok := args[2].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill expects INTEGER channels"}
+	}
+	b, ok := args[3].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill expects INTEGER channels"}
+	}
+	a, ok := args[4].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill expects INTEGER channels"}
+	}
+	if err := img.Fill(int(r.Value), int(g.Value), int(b.Value), int(a.Value)); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageFillRect(args ...object.Object) object.Object {
+	if len(args) != 9 {
+		return &object.Error{Message: "image_fill_rect expects 9 arguments: (image, x, y, w, h, r, g, b, a)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects IMAGE"}
+	}
+	x, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER x/y/w/h"}
+	}
+	y, ok := args[2].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER x/y/w/h"}
+	}
+	w, ok := args[3].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER x/y/w/h"}
+	}
+	h, ok := args[4].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER x/y/w/h"}
+	}
+	r, ok := args[5].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER channels"}
+	}
+	g, ok := args[6].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER channels"}
+	}
+	b, ok := args[7].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER channels"}
+	}
+	a, ok := args[8].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "image_fill_rect expects INTEGER channels"}
+	}
+	if err := img.FillRect(int(x.Value), int(y.Value), int(w.Value), int(h.Value), int(r.Value), int(g.Value), int(b.Value), int(a.Value)); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageFade(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "image_fade expects 2 arguments: (image, amount)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_fade expects IMAGE"}
+	}
+	amount, ok := gfxNumber(args[1])
+	if !ok {
+		return &object.Error{Message: "image_fade expects NUMBER amount"}
+	}
+	if err := img.Fade(amount); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageFadeWhite(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "image_fade_white expects 2 arguments: (image, amount)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_fade_white expects IMAGE"}
+	}
+	amount, ok := gfxNumber(args[1])
+	if !ok {
+		return &object.Error{Message: "image_fade_white expects NUMBER amount"}
+	}
+	if err := img.FadeToWhite(amount); err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return nilObj
+}
+
+func builtinImageWidth(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "image_width expects 1 argument: (image)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_width expects IMAGE"}
+	}
+	return &object.Integer{Value: int64(img.Width)}
+}
+
+func builtinImageHeight(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: "image_height expects 1 argument: (image)"}
+	}
+	img, ok := args[0].(*object.Image)
+	if !ok {
+		return &object.Error{Message: "image_height expects IMAGE"}
+	}
+	return &object.Integer{Value: int64(img.Height)}
+}
+
+func gfxNumber(o object.Object) (float64, bool) {
+	switch v := o.(type) {
+	case *object.Integer:
+		return float64(v.Value), true
+	case *object.Float:
+		return v.Value, true
+	default:
+		return 0, false
+	}
+}

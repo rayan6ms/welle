@@ -1,0 +1,8 @@
+export func new(w, h) { return image_new(w, h) }
+export func set(img, x, y, r, g, b, a) { image_set(img, x, y, r, g, b, a) }
+export func fill(img, r, g, b, a) { image_fill(img, r, g, b, a) }
+export func fill_rect(img, x, y, w, h, r, g, b, a) { image_fill_rect(img, x, y, w, h, r, g, b, a) }
+export func fade(img, amount) { image_fade(img, amount) }
+export func width(img) { return image_width(img) }
+export func height(img) { return image_height(img) }
+export func fade_white(img, amount) { image_fade_white(img, amount) }
