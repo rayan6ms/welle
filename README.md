@@ -223,6 +223,15 @@ The extension lives in `vscode-welle/` and provides:
 * Language configuration (brackets, comments, etc.)
 * LSP features (diagnostics, semantic tokens, go-to-definition, symbols, quick fixes, formatting)
 
+### Installing
+From the VS Code marketplace:
+1. Open VS Code.
+2. Go to Extensions view (Ctrl+Shift+X).
+3. Search for “Welle” and install the extension by “welle".
+
+Or just install it from the marketplace link:
+[https://marketplace.visualstudio.com/items?itemName=welle.welle](https://marketplace.visualstudio.com/items?itemName=welle.welle)
+
 ### Build & package (VSIX)
 
 From `vscode-welle/`:
