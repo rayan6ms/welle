@@ -1,8 +1,6 @@
 package compiler
 
 import (
-	"fmt"
-
 	"welle/internal/code"
 	"welle/internal/object"
 )
@@ -32,7 +30,7 @@ func foldConstants(ins code.Instructions, pos []SourcePos, constants *[]object.O
 			next := at + valSize
 			if next < len(ins) {
 				unOp := code.Opcode(ins[next])
-				if unOp == code.OpMinus || unOp == code.OpBang {
+				if unOp == code.OpMinus || unOp == code.OpBang || unOp == code.OpBitNot {
 					res, ok := foldUnary(unOp, val)
 					if ok {
 						size := valSize + instrSize(ins, next)
@@ -99,7 +97,8 @@ func constToInstruction(obj object.Object, constants *[]object.Object) code.Inst
 func isFoldableBinOp(op code.Opcode) bool {
 	switch op {
 	case code.OpAdd, code.OpSub, code.OpMul, code.OpDiv, code.OpMod,
-		code.OpEqual, code.OpNotEqual, code.OpGreaterThan:
+		code.OpBitOr, code.OpBitAnd, code.OpBitXor, code.OpShl, code.OpShr,
+		code.OpEqual, code.OpNotEqual, code.OpIs, code.OpGreaterThan, code.OpLessThan, code.OpLessEqual, code.OpGreaterEqual:
 		return true
 	default:
 		return false
@@ -119,20 +118,44 @@ func foldBin(op code.Opcode, a, b object.Object) (object.Object, bool, error) {
 			return &object.Integer{Value: ai.Value * bi.Value}, true, nil
 		case code.OpDiv:
 			if bi.Value == 0 {
-				return nil, false, fmt.Errorf("compile error: division by zero (constant fold)")
+				return nil, false, nil
 			}
 			return &object.Integer{Value: ai.Value / bi.Value}, true, nil
 		case code.OpMod:
 			if bi.Value == 0 {
-				return nil, false, fmt.Errorf("compile error: modulo by zero (constant fold)")
+				return nil, false, nil
 			}
 			return &object.Integer{Value: ai.Value % bi.Value}, true, nil
+		case code.OpBitOr:
+			return &object.Integer{Value: ai.Value | bi.Value}, true, nil
+		case code.OpBitAnd:
+			return &object.Integer{Value: ai.Value & bi.Value}, true, nil
+		case code.OpBitXor:
+			return &object.Integer{Value: ai.Value ^ bi.Value}, true, nil
+		case code.OpShl:
+			if bi.Value < 0 || bi.Value >= 64 {
+				return nil, false, nil
+			}
+			return &object.Integer{Value: int64(uint64(ai.Value) << uint64(bi.Value))}, true, nil
+		case code.OpShr:
+			if bi.Value < 0 || bi.Value >= 64 {
+				return nil, false, nil
+			}
+			return &object.Integer{Value: ai.Value >> uint64(bi.Value)}, true, nil
 		case code.OpEqual:
 			return &object.Boolean{Value: ai.Value == bi.Value}, true, nil
 		case code.OpNotEqual:
 			return &object.Boolean{Value: ai.Value != bi.Value}, true, nil
+		case code.OpIs:
+			return &object.Boolean{Value: ai.Value == bi.Value}, true, nil
 		case code.OpGreaterThan:
 			return &object.Boolean{Value: ai.Value > bi.Value}, true, nil
+		case code.OpLessThan:
+			return &object.Boolean{Value: ai.Value < bi.Value}, true, nil
+		case code.OpLessEqual:
+			return &object.Boolean{Value: ai.Value <= bi.Value}, true, nil
+		case code.OpGreaterEqual:
+			return &object.Boolean{Value: ai.Value >= bi.Value}, true, nil
 		}
 	}
 
@@ -144,6 +167,32 @@ func foldBin(op code.Opcode, a, b object.Object) (object.Object, bool, error) {
 			return &object.Boolean{Value: ab.Value == bb.Value}, true, nil
 		case code.OpNotEqual:
 			return &object.Boolean{Value: ab.Value != bb.Value}, true, nil
+		case code.OpIs:
+			return &object.Boolean{Value: ab.Value == bb.Value}, true, nil
+		}
+	}
+
+	as, aok := a.(*object.String)
+	bs, bok := b.(*object.String)
+	if aok && bok {
+		switch op {
+		case code.OpEqual:
+			return &object.Boolean{Value: as.Value == bs.Value}, true, nil
+		case code.OpNotEqual:
+			return &object.Boolean{Value: as.Value != bs.Value}, true, nil
+		case code.OpIs:
+			return &object.Boolean{Value: as.Value == bs.Value}, true, nil
+		}
+	}
+
+	_, an := a.(*object.Nil)
+	_, bn := b.(*object.Nil)
+	if an && bn {
+		switch op {
+		case code.OpEqual, code.OpIs:
+			return &object.Boolean{Value: true}, true, nil
+		case code.OpNotEqual:
+			return &object.Boolean{Value: false}, true, nil
 		}
 	}
 
@@ -155,6 +204,10 @@ func foldUnary(op code.Opcode, a object.Object) (object.Object, bool) {
 	case code.OpMinus:
 		if ai, ok := a.(*object.Integer); ok {
 			return &object.Integer{Value: -ai.Value}, true
+		}
+	case code.OpBitNot:
+		if ai, ok := a.(*object.Integer); ok {
+			return &object.Integer{Value: ^ai.Value}, true
 		}
 	case code.OpBang:
 		if ab, ok := a.(*object.Boolean); ok {

@@ -1,0 +1,21 @@
+if (ready) { // if-header
+  run()
+} else { // else-header
+  stop()
+}
+
+while (ok) { // while-header
+  tick()
+}
+
+for (i = 0; i < 3; i = i + 1) { // for-header
+  sum = sum + i
+}
+
+for (x in items) { // for-in-no-parens
+  use(x)
+}
+
+for (y in items2) { // for-in-parens
+  use(y)
+}

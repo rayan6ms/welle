@@ -3,6 +3,7 @@ package module
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"welle/internal/compiler"
 	"welle/internal/lexer"
@@ -11,12 +12,19 @@ import (
 )
 
 type Loader struct {
-	Resolver *Resolver
-	Cache    map[string]*compiler.Bytecode // key: abs path
+	Resolver  *Resolver
+	Cache     map[string]*compiler.Bytecode // key: abs path
+	loadStack []string
+	loadIndex map[string]int
 }
 
 func NewLoader(res *Resolver) *Loader {
-	return &Loader{Resolver: res, Cache: map[string]*compiler.Bytecode{}}
+	return &Loader{
+		Resolver:  res,
+		Cache:     map[string]*compiler.Bytecode{},
+		loadStack: []string{},
+		loadIndex: map[string]int{},
+	}
 }
 
 func (l *Loader) LoadBytecode(fromFile, spec string, optimize bool) (*compiler.Bytecode, string, error) {
@@ -29,6 +37,21 @@ func (l *Loader) LoadBytecode(fromFile, spec string, optimize bool) (*compiler.B
 		return bc, path, nil
 	}
 
+	if idx, ok := l.loadIndex[path]; ok {
+		chain := append([]string{}, l.loadStack[idx:]...)
+		chain = append(chain, path)
+		return nil, "", fmt.Errorf("WM0001 import cycle: %s", strings.Join(chain, " -> "))
+	}
+
+	l.loadIndex[path] = len(l.loadStack)
+	l.loadStack = append(l.loadStack, path)
+	defer func() {
+		delete(l.loadIndex, path)
+		if len(l.loadStack) > 0 {
+			l.loadStack = l.loadStack[:len(l.loadStack)-1]
+		}
+	}()
+
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
@@ -39,6 +62,10 @@ func (l *Loader) LoadBytecode(fromFile, spec string, optimize bool) (*compiler.B
 	prog := p.ParseProgram()
 	if len(p.Errors()) > 0 {
 		return nil, "", fmt.Errorf("parse error in %s:\n%v", path, p.Errors())
+	}
+
+	if err := CheckDuplicateExports(prog, path); err != nil {
+		return nil, "", err
 	}
 
 	c := compiler.NewWithFile(path)

@@ -174,6 +174,99 @@ func TestLexer_DictTokens(t *testing.T) {
 	}
 }
 
+func TestLexer_TernaryTokens(t *testing.T) {
+	input := `a ? b : c`
+
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.IDENT, "a"},
+		{token.QUESTION, "?"},
+		{token.IDENT, "b"},
+		{token.COLON, ":"},
+		{token.IDENT, "c"},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
+
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] - wrong type. expected=%q got=%q (lit=%q)", i, tt.typ, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] - wrong literal. expected=%q got=%q (type=%q)", i, tt.lit, tok.Literal, tok.Type)
+		}
+	}
+}
+
+func TestLexer_BitwiseTokens(t *testing.T) {
+	input := `a|b & c ^ d ~e << 2 >> 1`
+
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.IDENT, "a"},
+		{token.BITOR, "|"},
+		{token.IDENT, "b"},
+		{token.BITAND, "&"},
+		{token.IDENT, "c"},
+		{token.BITXOR, "^"},
+		{token.IDENT, "d"},
+		{token.BITNOT, "~"},
+		{token.IDENT, "e"},
+		{token.SHL, "<<"},
+		{token.INT, "2"},
+		{token.SHR, ">>"},
+		{token.INT, "1"},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
+
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] - wrong type. expected=%q got=%q (lit=%q)", i, tt.typ, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] - wrong literal. expected=%q got=%q (type=%q)", i, tt.lit, tok.Literal, tok.Type)
+		}
+	}
+}
+
+func TestLexer_TemplateAndIsTokens(t *testing.T) {
+	input := "a is b\nx = t\"hello ${name}!\"\n"
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.IDENT, "a"},
+		{token.IS, "is"},
+		{token.IDENT, "b"},
+		{token.NEWLINE, "\n"},
+		{token.IDENT, "x"},
+		{token.ASSIGN, "="},
+		{token.TEMPLATE, "hello ${name}!"},
+		{token.NEWLINE, "\n"},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] wrong type: want=%s got=%s", i, tt.typ, tok.Type)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] wrong literal: want=%q got=%q", i, tt.lit, tok.Literal)
+		}
+	}
+}
+
 func TestLexer_Dot(t *testing.T) {
 	input := `a.b()`
 
@@ -191,6 +284,106 @@ func TestLexer_Dot(t *testing.T) {
 
 	l := New(input)
 
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] - wrong type. expected=%q got=%q (lit=%q)", i, tt.typ, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] - wrong literal. expected=%q got=%q (type=%q)", i, tt.lit, tok.Literal, tok.Type)
+		}
+	}
+}
+
+func TestLexer_BangAndNotEqual(t *testing.T) {
+	input := `!a
+!=
+! =`
+
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.BANG, "!"},
+		{token.IDENT, "a"},
+		{token.NEWLINE, "\n"},
+		{token.NE, "!="},
+		{token.NEWLINE, "\n"},
+		{token.BANG, "!"},
+		{token.ASSIGN, "="},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] - wrong type. expected=%q got=%q (lit=%q)", i, tt.typ, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] - wrong literal. expected=%q got=%q (type=%q)", i, tt.lit, tok.Literal, tok.Type)
+		}
+	}
+}
+
+func TestLexer_CompoundAssign(t *testing.T) {
+	input := "x += 1\nx -= 2\nx *= 3\nx /= 4\nx %= 5\n"
+
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.IDENT, "x"},
+		{token.PLUS_ASSIGN, "+="},
+		{token.INT, "1"},
+		{token.NEWLINE, "\n"},
+		{token.IDENT, "x"},
+		{token.MINUS_ASSIGN, "-="},
+		{token.INT, "2"},
+		{token.NEWLINE, "\n"},
+		{token.IDENT, "x"},
+		{token.STAR_ASSIGN, "*="},
+		{token.INT, "3"},
+		{token.NEWLINE, "\n"},
+		{token.IDENT, "x"},
+		{token.SLASH_ASSIGN, "/="},
+		{token.INT, "4"},
+		{token.NEWLINE, "\n"},
+		{token.IDENT, "x"},
+		{token.PERCENT_ASSIGN, "%="},
+		{token.INT, "5"},
+		{token.NEWLINE, "\n"},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
+
+	for i, tt := range tests {
+		tok := l.NextToken()
+		if tok.Type != tt.typ {
+			t.Fatalf("tests[%d] - wrong type. expected=%q got=%q (lit=%q)", i, tt.typ, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.lit {
+			t.Fatalf("tests[%d] - wrong literal. expected=%q got=%q (type=%q)", i, tt.lit, tok.Literal, tok.Type)
+		}
+	}
+}
+
+func TestLexer_Walrus(t *testing.T) {
+	input := "x := 1\n"
+
+	tests := []struct {
+		typ token.Type
+		lit string
+	}{
+		{token.IDENT, "x"},
+		{token.WALRUS, ":="},
+		{token.INT, "1"},
+		{token.NEWLINE, "\n"},
+		{token.EOF, ""},
+	}
+
+	l := New(input)
 	for i, tt := range tests {
 		tok := l.NextToken()
 		if tok.Type != tt.typ {

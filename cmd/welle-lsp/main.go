@@ -39,6 +39,11 @@ func main() {
 		TextDocumentSemanticTokensFull: textDocumentSemanticTokensFull,
 		TextDocumentDefinition:         textDocumentDefinition,
 		TextDocumentDocumentSymbol:     textDocumentDocumentSymbol,
+		TextDocumentCompletion:         textDocumentCompletion,
+		TextDocumentHover:              textDocumentHover,
+		TextDocumentRename:             textDocumentRename,
+		TextDocumentReferences:         textDocumentReferences,
+		TextDocumentSignatureHelp:      textDocumentSignatureHelp,
 	}
 
 	server := server.NewServer(&handler, lsName, false)
@@ -93,6 +98,16 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 		DocumentFormattingProvider: true,
 		DefinitionProvider:         true,
 		DocumentSymbolProvider:     true,
+		CompletionProvider: &protocol.CompletionOptions{
+			TriggerCharacters: []string{".", "\""},
+		},
+		HoverProvider:      true,
+		RenameProvider:     true,
+		ReferencesProvider: true,
+		SignatureHelpProvider: &protocol.SignatureHelpOptions{
+			TriggerCharacters:   []string{"(", ","},
+			RetriggerCharacters: []string{")"},
+		},
 	}
 
 	b, _ := json.Marshal(caps)
@@ -279,6 +294,55 @@ func textDocumentDocumentSymbol(ctx *glsp.Context, params *protocol.DocumentSymb
 		return []protocol.DocumentSymbol{}, nil
 	}
 	return ix.Symbols, nil
+}
+
+func textDocumentCompletion(ctx *glsp.Context, params *protocol.CompletionParams) (any, error) {
+	uri := string(params.TextDocument.URI)
+	text, ok := store.Get(uri)
+	if !ok {
+		return nil, nil
+	}
+	items := lsp.CompletionItems(ws, uri, text, params.Position)
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return items, nil
+}
+
+func textDocumentHover(ctx *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
+	uri := string(params.TextDocument.URI)
+	text, ok := store.Get(uri)
+	if !ok {
+		return nil, nil
+	}
+	return lsp.HoverAt(ws, uri, text, params.Position)
+}
+
+func textDocumentRename(ctx *glsp.Context, params *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
+	uri := string(params.TextDocument.URI)
+	text, ok := store.Get(uri)
+	if !ok {
+		return nil, nil
+	}
+	return lsp.RenameAt(ws, uri, text, params.Position, params.NewName)
+}
+
+func textDocumentReferences(ctx *glsp.Context, params *protocol.ReferenceParams) ([]protocol.Location, error) {
+	uri := string(params.TextDocument.URI)
+	text, ok := store.Get(uri)
+	if !ok {
+		return nil, nil
+	}
+	return lsp.ReferencesAt(ws, uri, text, params.Position, params.Context.IncludeDeclaration)
+}
+
+func textDocumentSignatureHelp(ctx *glsp.Context, params *protocol.SignatureHelpParams) (*protocol.SignatureHelp, error) {
+	uri := string(params.TextDocument.URI)
+	text, ok := store.Get(uri)
+	if !ok {
+		return nil, nil
+	}
+	return lsp.SignatureHelpAt(ws, uri, text, params.Position)
 }
 
 func updateIndex(uri string, text string) {

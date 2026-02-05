@@ -3,7 +3,6 @@ package object
 import (
 	"bytes"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -25,9 +24,12 @@ const (
 	FUNCTION_OBJ          Type = "FUNCTION"
 	COMPILED_FUNCTION_OBJ Type = "COMPILED_FUNCTION"
 	CLOSURE_OBJ           Type = "CLOSURE"
+	CELL_OBJ              Type = "CELL"
 	ARRAY_OBJ             Type = "ARRAY"
+	TUPLE_OBJ             Type = "TUPLE"
 	DICT_OBJ              Type = "DICT"
 	BUILTIN_OBJ           Type = "BUILTIN"
+	SPREAD_OBJ            Type = "SPREAD"
 	ERROR_OBJ             Type = "ERROR"
 	IMAGE_OBJ             Type = "IMAGE"
 )
@@ -122,12 +124,21 @@ func (*CompiledFunction) Inspect() string {
 
 type Closure struct {
 	Fn   *CompiledFunction
-	Free []Object
+	Free []*Cell
 }
 
 func (*Closure) Type() Type { return CLOSURE_OBJ }
 func (*Closure) Inspect() string {
 	return "closure"
+}
+
+type Cell struct {
+	Value Object
+}
+
+func (*Cell) Type() Type { return CELL_OBJ }
+func (*Cell) Inspect() string {
+	return "<cell>"
 }
 
 type BuiltinFunction func(args ...Object) Object
@@ -155,6 +166,27 @@ func (a *Array) Inspect() string {
 	return out.String()
 }
 
+type Tuple struct {
+	Elements []Object
+}
+
+func (*Tuple) Type() Type { return TUPLE_OBJ }
+func (t *Tuple) Inspect() string {
+	var out bytes.Buffer
+	out.WriteString("(")
+	for i, el := range t.Elements {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(el.Inspect())
+	}
+	if len(t.Elements) == 1 {
+		out.WriteString(",")
+	}
+	out.WriteString(")")
+	return out.String()
+}
+
 type DictPair struct {
 	Key   Object
 	Value Object
@@ -168,16 +200,11 @@ func (*Dict) Type() Type { return DICT_OBJ }
 func (d *Dict) Inspect() string {
 	var out bytes.Buffer
 	out.WriteString("#{")
-	keys := make([]string, 0, len(d.Pairs))
-	for k := range d.Pairs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for i, k := range keys {
+	pairs := SortedDictPairs(d)
+	for i, pair := range pairs {
 		if i > 0 {
 			out.WriteString(", ")
 		}
-		pair := d.Pairs[k]
 		if ks, ok := pair.Key.(*String); ok {
 			out.WriteString(`"` + ks.Value + `": `)
 		} else {
@@ -187,6 +214,20 @@ func (d *Dict) Inspect() string {
 		out.WriteString(pair.Value.Inspect())
 	}
 	out.WriteString("}")
+	return out.String()
+}
+
+type Spread struct {
+	Value Object
+}
+
+func (*Spread) Type() Type { return SPREAD_OBJ }
+func (s *Spread) Inspect() string {
+	var out bytes.Buffer
+	out.WriteString("...")
+	if s.Value != nil {
+		out.WriteString(s.Value.Inspect())
+	}
 	return out.String()
 }
 
@@ -228,4 +269,17 @@ func (e *Error) Inspect() string {
 		return fmt.Sprintf("error(%d): %s", e.Code, e.Message)
 	}
 	return "error: " + e.Message
+}
+
+func (e *Error) GetMember(name string) (Object, bool) {
+	switch name {
+	case "message":
+		return &String{Value: e.Message}, true
+	case "code":
+		return &Integer{Value: e.Code}, true
+	case "stack":
+		return &String{Value: e.Stack}, true
+	default:
+		return nil, false
+	}
 }

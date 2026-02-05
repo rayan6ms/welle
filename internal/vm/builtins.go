@@ -5,99 +5,141 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
+	"welle/internal/formatutil"
 	"welle/internal/gfx"
 	"welle/internal/object"
+	"welle/internal/runtimeio"
+	"welle/internal/semantics"
 )
 
 var builtins = []*object.Builtin{
 	{Fn: builtinPrint},          // index 0
 	{Fn: builtinLen},            // 1
 	{Fn: builtinStr},            // 2
-	{Fn: builtinKeys},           // 3
-	{Fn: builtinValues},         // 4
-	{Fn: builtinPush},           // 5
-	{Fn: builtinError},          // 6
-	{Fn: builtinRange},          // 7
-	{Fn: builtinHasKey},         // 8
-	{Fn: builtinSort},           // 9
-	{Fn: builtinWriteFile},      // 10
-	{Fn: builtinMathFloor},      // 11
-	{Fn: builtinMathSqrt},       // 12
-	{Fn: builtinMathSin},        // 13
-	{Fn: builtinMathCos},        // 14
-	{Fn: builtinGfxOpen},        // 15
-	{Fn: builtinGfxClose},       // 16
-	{Fn: builtinGfxShouldClose}, // 17
-	{Fn: builtinGfxBeginFrame},  // 18
-	{Fn: builtinGfxEndFrame},    // 19
-	{Fn: builtinGfxClear},       // 20
-	{Fn: builtinGfxRect},        // 21
-	{Fn: builtinGfxPixel},       // 22
-	{Fn: builtinGfxTime},        // 23
-	{Fn: builtinGfxKeyDown},     // 24
-	{Fn: builtinGfxMouseX},      // 25
-	{Fn: builtinGfxMouseY},      // 26
-	{Fn: builtinGfxPresent},     // 27
-	{Fn: builtinImageNew},       // 28
-	{Fn: builtinImageSet},       // 29
-	{Fn: builtinImageFill},      // 30
-	{Fn: builtinImageWidth},     // 31
-	{Fn: builtinImageHeight},    // 32
-	{Fn: builtinImageFillRect},  // 33
-	{Fn: builtinImageFade},      // 34
-	{Fn: builtinImageFadeWhite}, // 35
+	{Fn: builtinJoin},           // 3
+	{Fn: builtinKeys},           // 4
+	{Fn: builtinValues},         // 5
+	{Fn: builtinPush},           // 6
+	{Fn: builtinCount},          // 7
+	{Fn: builtinRemove},         // 8
+	{Fn: builtinGet},            // 9
+	{Fn: builtinPop},            // 10
+	{Fn: builtinError},          // 11
+	{Fn: builtinRange},          // 12
+	{Fn: builtinHasKey},         // 13
+	{Fn: builtinSort},           // 14
+	{Fn: builtinWriteFile},      // 15
+	{Fn: builtinMathFloor},      // 16
+	{Fn: builtinMathSqrt},       // 17
+	{Fn: builtinMathSin},        // 18
+	{Fn: builtinMathCos},        // 19
+	{Fn: builtinGfxOpen},        // 20
+	{Fn: builtinGfxClose},       // 21
+	{Fn: builtinGfxShouldClose}, // 22
+	{Fn: builtinGfxBeginFrame},  // 23
+	{Fn: builtinGfxEndFrame},    // 24
+	{Fn: builtinGfxClear},       // 25
+	{Fn: builtinGfxRect},        // 26
+	{Fn: builtinGfxPixel},       // 27
+	{Fn: builtinGfxTime},        // 28
+	{Fn: builtinGfxKeyDown},     // 29
+	{Fn: builtinGfxMouseX},      // 30
+	{Fn: builtinGfxMouseY},      // 31
+	{Fn: builtinGfxPresent},     // 32
+	{Fn: builtinImageNew},       // 33
+	{Fn: builtinImageSet},       // 34
+	{Fn: builtinImageFill},      // 35
+	{Fn: builtinImageWidth},     // 36
+	{Fn: builtinImageHeight},    // 37
+	{Fn: builtinImageFillRect},  // 38
+	{Fn: builtinImageFade},      // 39
+	{Fn: builtinImageFadeWhite}, // 40
+	{Fn: builtinMax},            // 41
+	{Fn: builtinAbs},            // 42
+	{Fn: builtinSum},            // 43
+	{Fn: builtinReverse},        // 44
+	{Fn: builtinAny},            // 45
+	{Fn: builtinAll},            // 46
+	{Fn: builtinMap},            // 47
+	{Fn: builtinMean},           // 48
+	{Fn: builtinSqrt},           // 49
+	{Fn: builtinInput},          // 50
+	{Fn: builtinGetPass},        // 51
+	{Fn: builtinGroupDigits},    // 52
+	{Fn: builtinFormatFloat},    // 53
+	{Fn: builtinFormatPercent},  // 54
 }
 
 var builtinIndex = map[string]int{
 	"print":            0,
 	"len":              1,
 	"str":              2,
-	"keys":             3,
-	"values":           4,
-	"push":             5,
-	"append":           5,
-	"error":            6,
-	"range":            7,
-	"hasKey":           8,
-	"sort":             9,
-	"writeFile":        10,
-	"math_floor":       11,
-	"math_sqrt":        12,
-	"math_sin":         13,
-	"math_cos":         14,
-	"gfx_open":         15,
-	"gfx_close":        16,
-	"gfx_shouldClose":  17,
-	"gfx_beginFrame":   18,
-	"gfx_endFrame":     19,
-	"gfx_clear":        20,
-	"gfx_rect":         21,
-	"gfx_pixel":        22,
-	"gfx_time":         23,
-	"gfx_keyDown":      24,
-	"gfx_mouseX":       25,
-	"gfx_mouseY":       26,
-	"gfx_present":      27,
-	"image_new":        28,
-	"image_set":        29,
-	"image_fill":       30,
-	"image_width":      31,
-	"image_height":     32,
-	"image_fill_rect":  33,
-	"image_fade":       34,
-	"image_fade_white": 35,
+	"join":             3,
+	"keys":             4,
+	"values":           5,
+	"push":             6,
+	"append":           6,
+	"count":            7,
+	"remove":           8,
+	"get":              9,
+	"pop":              10,
+	"error":            11,
+	"range":            12,
+	"hasKey":           13,
+	"sort":             14,
+	"writeFile":        15,
+	"math_floor":       16,
+	"math_sqrt":        17,
+	"math_sin":         18,
+	"math_cos":         19,
+	"gfx_open":         20,
+	"gfx_close":        21,
+	"gfx_shouldClose":  22,
+	"gfx_beginFrame":   23,
+	"gfx_endFrame":     24,
+	"gfx_clear":        25,
+	"gfx_rect":         26,
+	"gfx_pixel":        27,
+	"gfx_time":         28,
+	"gfx_keyDown":      29,
+	"gfx_mouseX":       30,
+	"gfx_mouseY":       31,
+	"gfx_present":      32,
+	"image_new":        33,
+	"image_set":        34,
+	"image_fill":       35,
+	"image_width":      36,
+	"image_height":     37,
+	"image_fill_rect":  38,
+	"image_fade":       39,
+	"image_fade_white": 40,
+	"max":              41,
+	"abs":              42,
+	"sum":              43,
+	"reverse":          44,
+	"any":              45,
+	"all":              46,
+	"map":              47,
+	"mean":             48,
+	"sqrt":             49,
+	"input":            50,
+	"getpass":          51,
+	"group_digits":     52,
+	"format_float":     53,
+	"format_percent":   54,
 }
 
 func builtinPrint(args ...object.Object) object.Object {
 	for i, a := range args {
 		if i > 0 {
-			print(" ")
+			_, _ = fmt.Fprint(os.Stdout, " ")
 		}
-		print(a.Inspect())
+		_, _ = fmt.Fprint(os.Stdout, a.Inspect())
 	}
-	println()
+	_, _ = fmt.Fprintln(os.Stdout)
 	return nilObj
 }
 
@@ -124,6 +166,114 @@ func builtinStr(args ...object.Object) object.Object {
 	return &object.String{Value: args[0].Inspect()}
 }
 
+func builtinGroupDigits(args ...object.Object) object.Object {
+	if len(args) < 1 || len(args) > 3 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1 to 3, got %d", len(args))}
+	}
+	sep := ","
+	group := int64(3)
+	if len(args) >= 2 {
+		s, ok := args[1].(*object.String)
+		if !ok {
+			return &object.Error{Message: "group_digits() sep must be STRING"}
+		}
+		sep = s.Value
+	}
+	if len(args) == 3 {
+		g, ok := args[2].(*object.Integer)
+		if !ok {
+			return &object.Error{Message: "group_digits() group must be INTEGER"}
+		}
+		group = g.Value
+	}
+
+	var out string
+	var err error
+	switch x := args[0].(type) {
+	case *object.Integer:
+		out, err = formatutil.GroupDigitsFromInt(x.Value, sep, int(group))
+	case *object.String:
+		out, err = formatutil.GroupDigitsFromString(x.Value, sep, int(group))
+	default:
+		return &object.Error{Message: "group_digits() x must be INTEGER or STRING"}
+	}
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.String{Value: out}
+}
+
+func builtinFormatFloat(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 2, got %d", len(args))}
+	}
+	dec, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "format_float() decimals must be INTEGER"}
+	}
+	var x float64
+	switch v := args[0].(type) {
+	case *object.Integer:
+		x = float64(v.Value)
+	case *object.Float:
+		x = v.Value
+	default:
+		return &object.Error{Message: "format_float() x must be NUMBER"}
+	}
+	out, err := formatutil.FormatFloat(x, int(dec.Value))
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.String{Value: out}
+}
+
+func builtinFormatPercent(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 2, got %d", len(args))}
+	}
+	dec, ok := args[1].(*object.Integer)
+	if !ok {
+		return &object.Error{Message: "format_percent() decimals must be INTEGER"}
+	}
+	var x float64
+	switch v := args[0].(type) {
+	case *object.Integer:
+		x = float64(v.Value)
+	case *object.Float:
+		x = v.Value
+	default:
+		return &object.Error{Message: "format_percent() x must be NUMBER"}
+	}
+	out, err := formatutil.FormatPercent(x, int(dec.Value))
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.String{Value: out}
+}
+
+func builtinJoin(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 2, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "join() first argument must be ARRAY"}
+	}
+	sep, ok := args[1].(*object.String)
+	if !ok {
+		return &object.Error{Message: "join() separator must be STRING"}
+	}
+	parts := make([]string, len(arr.Elements))
+	for i, el := range arr.Elements {
+		s, ok := el.(*object.String)
+		if !ok {
+			return &object.Error{Message: "join() array elements must be STRING"}
+		}
+		parts[i] = s.Value
+	}
+	return &object.String{Value: strings.Join(parts, sep.Value)}
+}
+
 func builtinKeys(args ...object.Object) object.Object {
 	if len(args) != 1 {
 		return &object.Error{Message: "keys expects 1 argument"}
@@ -132,14 +282,10 @@ func builtinKeys(args ...object.Object) object.Object {
 	if !ok {
 		return &object.Error{Message: "keys expects DICT"}
 	}
-	ks := make([]string, 0, len(d.Pairs))
-	for k := range d.Pairs {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	out := make([]object.Object, 0, len(ks))
-	for _, k := range ks {
-		out = append(out, d.Pairs[k].Key)
+	pairs := object.SortedDictPairs(d)
+	out := make([]object.Object, 0, len(pairs))
+	for _, pair := range pairs {
+		out = append(out, pair.Key)
 	}
 	return &object.Array{Elements: out}
 }
@@ -152,14 +298,10 @@ func builtinValues(args ...object.Object) object.Object {
 	if !ok {
 		return &object.Error{Message: "values expects DICT"}
 	}
-	ks := make([]string, 0, len(d.Pairs))
-	for k := range d.Pairs {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	out := make([]object.Object, 0, len(ks))
-	for _, k := range ks {
-		out = append(out, d.Pairs[k].Value)
+	pairs := object.SortedDictPairs(d)
+	out := make([]object.Object, 0, len(pairs))
+	for _, pair := range pairs {
+		out = append(out, pair.Value)
 	}
 	return &object.Array{Elements: out}
 }
@@ -176,6 +318,107 @@ func builtinPush(args ...object.Object) object.Object {
 	newElems = append(newElems, a.Elements...)
 	newElems = append(newElems, args[1])
 	return &object.Array{Elements: newElems}
+}
+
+func builtinCount(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "count() expects 2 arguments"}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "count() expects ARRAY as first argument"}
+	}
+	target := args[1]
+	var count int64
+	for _, el := range arr.Elements {
+		eq, err := semantics.Compare("==", el, target)
+		if err != nil {
+			return &object.Error{Message: err.Error()}
+		}
+		if eq {
+			count++
+		}
+	}
+	return &object.Integer{Value: count}
+}
+
+func builtinRemove(args ...object.Object) object.Object {
+	if len(args) != 2 {
+		return &object.Error{Message: "remove() expects 2 arguments"}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "remove() expects ARRAY as first argument"}
+	}
+	target := args[1]
+	for i, el := range arr.Elements {
+		eq, err := semantics.Compare("==", el, target)
+		if err != nil {
+			return &object.Error{Message: err.Error()}
+		}
+		if eq {
+			arr.Elements = append(arr.Elements[:i], arr.Elements[i+1:]...)
+			return nativeBool(true)
+		}
+	}
+	return nativeBool(false)
+}
+
+func builtinGet(args ...object.Object) object.Object {
+	if len(args) != 2 && len(args) != 3 {
+		return &object.Error{Message: "get() expects 2 or 3 arguments"}
+	}
+	d, ok := args[0].(*object.Dict)
+	if !ok {
+		return &object.Error{Message: "get() expects DICT as first argument"}
+	}
+	hk, ok := object.HashKeyOf(args[1])
+	if !ok {
+		return &object.Error{Message: "unusable as dict key: " + string(args[1].Type())}
+	}
+	if pair, exists := d.Pairs[object.HashKeyString(hk)]; exists {
+		return pair.Value
+	}
+	if len(args) == 3 {
+		return args[2]
+	}
+	return nilObj
+}
+
+func builtinPop(args ...object.Object) object.Object {
+	switch len(args) {
+	case 1:
+		arr, ok := args[0].(*object.Array)
+		if !ok {
+			return &object.Error{Message: "pop() expects ARRAY as first argument when called with 1 argument"}
+		}
+		if len(arr.Elements) == 0 {
+			return &object.Error{Message: "pop from empty array"}
+		}
+		last := arr.Elements[len(arr.Elements)-1]
+		arr.Elements = arr.Elements[:len(arr.Elements)-1]
+		return last
+	case 2, 3:
+		d, ok := args[0].(*object.Dict)
+		if !ok {
+			return &object.Error{Message: "pop() expects DICT as first argument when called with 2 or 3 arguments"}
+		}
+		hk, ok := object.HashKeyOf(args[1])
+		if !ok {
+			return &object.Error{Message: "unusable as dict key: " + string(args[1].Type())}
+		}
+		key := object.HashKeyString(hk)
+		if pair, exists := d.Pairs[key]; exists {
+			delete(d.Pairs, key)
+			return pair.Value
+		}
+		if len(args) == 3 {
+			return args[2]
+		}
+		return &object.Error{Message: "key not found"}
+	default:
+		return &object.Error{Message: "pop() expects 1 argument (array) or 2/3 arguments (dict)"}
+	}
 }
 
 func builtinError(args ...object.Object) object.Object {
@@ -332,6 +575,232 @@ func builtinSort(args ...object.Object) object.Object {
 	}
 }
 
+func builtinMax(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "max() expects ARRAY"}
+	}
+	if len(arr.Elements) == 0 {
+		return &object.Error{Message: "max() arg is an empty sequence"}
+	}
+
+	switch first := arr.Elements[0].(type) {
+	case *object.Integer, *object.Float:
+		maxFloat := 0.0
+		maxInt := int64(0)
+		hasFloat := false
+		if v, ok := first.(*object.Float); ok {
+			maxFloat = v.Value
+			hasFloat = true
+		} else {
+			maxInt = first.(*object.Integer).Value
+		}
+		for i := 1; i < len(arr.Elements); i++ {
+			switch v := arr.Elements[i].(type) {
+			case *object.Integer:
+				if hasFloat {
+					val := float64(v.Value)
+					if val > maxFloat {
+						maxFloat = val
+					}
+				} else if v.Value > maxInt {
+					maxInt = v.Value
+				}
+			case *object.Float:
+				if !hasFloat {
+					maxFloat = float64(maxInt)
+					hasFloat = true
+				}
+				if v.Value > maxFloat {
+					maxFloat = v.Value
+				}
+			default:
+				return &object.Error{Message: "max() requires all elements to be NUMBER"}
+			}
+		}
+		if hasFloat {
+			return &object.Float{Value: maxFloat}
+		}
+		return &object.Integer{Value: maxInt}
+
+	case *object.String:
+		maxStr := first.Value
+		for i := 1; i < len(arr.Elements); i++ {
+			v, ok := arr.Elements[i].(*object.String)
+			if !ok {
+				return &object.Error{Message: "max() requires all elements to be STRING"}
+			}
+			if v.Value > maxStr {
+				maxStr = v.Value
+			}
+		}
+		return &object.String{Value: maxStr}
+
+	default:
+		return &object.Error{Message: "max() requires NUMBER or STRING elements"}
+	}
+}
+
+func builtinAbs(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	switch v := args[0].(type) {
+	case *object.Integer:
+		if v.Value < 0 {
+			return &object.Integer{Value: -v.Value}
+		}
+		return &object.Integer{Value: v.Value}
+	case *object.Float:
+		if v.Value < 0 {
+			return &object.Float{Value: -v.Value}
+		}
+		return &object.Float{Value: v.Value}
+	default:
+		return &object.Error{Message: "abs() expects NUMBER"}
+	}
+}
+
+func builtinSum(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "sum() expects ARRAY"}
+	}
+	var totalInt int64
+	var totalFloat float64
+	hasFloat := false
+	for _, el := range arr.Elements {
+		switch v := el.(type) {
+		case *object.Integer:
+			if hasFloat {
+				totalFloat += float64(v.Value)
+			} else {
+				totalInt += v.Value
+			}
+		case *object.Float:
+			if !hasFloat {
+				totalFloat = float64(totalInt)
+				hasFloat = true
+			}
+			totalFloat += v.Value
+		default:
+			return &object.Error{Message: "sum() requires all elements to be NUMBER"}
+		}
+	}
+	if hasFloat {
+		return &object.Float{Value: totalFloat}
+	}
+	return &object.Integer{Value: totalInt}
+}
+
+func builtinReverse(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	switch v := args[0].(type) {
+	case *object.Array:
+		out := make([]object.Object, len(v.Elements))
+		for i := range v.Elements {
+			out[len(v.Elements)-1-i] = v.Elements[i]
+		}
+		return &object.Array{Elements: out}
+	case *object.String:
+		runes := []rune(v.Value)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return &object.String{Value: string(runes)}
+	default:
+		return &object.Error{Message: "reverse() expects ARRAY or STRING"}
+	}
+}
+
+func builtinAny(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "any() expects ARRAY"}
+	}
+	for _, el := range arr.Elements {
+		if isTruthy(el) {
+			return nativeBool(true)
+		}
+	}
+	return nativeBool(false)
+}
+
+func builtinAll(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "all() expects ARRAY"}
+	}
+	for _, el := range arr.Elements {
+		if !isTruthy(el) {
+			return nativeBool(false)
+		}
+	}
+	return nativeBool(true)
+}
+
+func builtinMap(args ...object.Object) object.Object {
+	return &object.Error{Message: "map() is not directly callable"}
+}
+
+func builtinMean(args ...object.Object) object.Object {
+	if len(args) != 1 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 1, got %d", len(args))}
+	}
+	arr, ok := args[0].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "mean() expects ARRAY"}
+	}
+	if len(arr.Elements) == 0 {
+		return &object.Error{Message: "mean() arg is an empty sequence"}
+	}
+
+	totalInt := int64(0)
+	totalFloat := float64(0)
+	hasFloat := false
+	for _, el := range arr.Elements {
+		switch v := el.(type) {
+		case *object.Integer:
+			if hasFloat {
+				totalFloat += float64(v.Value)
+			} else {
+				totalInt += v.Value
+			}
+		case *object.Float:
+			if !hasFloat {
+				totalFloat = float64(totalInt)
+				hasFloat = true
+			}
+			totalFloat += v.Value
+		default:
+			return &object.Error{Message: "mean() requires all elements to be NUMBER"}
+		}
+	}
+
+	count := int64(len(arr.Elements))
+	if hasFloat {
+		return &object.Float{Value: totalFloat / float64(count)}
+	}
+	if totalInt%count == 0 {
+		return &object.Integer{Value: totalInt / count}
+	}
+	return &object.Float{Value: float64(totalInt) / float64(count)}
+}
+
 func builtinWriteFile(args ...object.Object) object.Object {
 	if len(args) != 2 {
 		return &object.Error{Message: "writeFile expects 2 arguments: (path, content)"}
@@ -380,6 +849,48 @@ func builtinMathCos(args ...object.Object) object.Object {
 		return &object.Error{Message: err.Error()}
 	}
 	return &object.Float{Value: math.Cos(v)}
+}
+
+func builtinSqrt(args ...object.Object) object.Object {
+	return builtinMathSqrt(args...)
+}
+
+func builtinInput(args ...object.Object) object.Object {
+	if len(args) > 1 {
+		return &object.Error{Message: "input() expects 0 or 1 arguments"}
+	}
+	prompt := ""
+	if len(args) == 1 {
+		str, ok := args[0].(*object.String)
+		if !ok {
+			return &object.Error{Message: "input() expects STRING prompt"}
+		}
+		prompt = str.Value
+	}
+	line, err := runtimeio.Input(prompt)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.String{Value: line}
+}
+
+func builtinGetPass(args ...object.Object) object.Object {
+	if len(args) > 1 {
+		return &object.Error{Message: "getpass() expects 0 or 1 arguments"}
+	}
+	prompt := ""
+	if len(args) == 1 {
+		str, ok := args[0].(*object.String)
+		if !ok {
+			return &object.Error{Message: "getpass() expects STRING prompt"}
+		}
+		prompt = str.Value
+	}
+	line, err := runtimeio.GetPass(prompt)
+	if err != nil {
+		return &object.Error{Message: err.Error()}
+	}
+	return &object.String{Value: line}
 }
 
 func builtinFloatArg(name string, args ...object.Object) (float64, error) {

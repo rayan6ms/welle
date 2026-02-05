@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"welle/internal/ast"
 	"welle/internal/compiler"
 	"welle/internal/lexer"
+	"welle/internal/limits"
 	"welle/internal/module"
 	"welle/internal/object"
 	"welle/internal/parser"
@@ -16,18 +18,48 @@ import (
 )
 
 type Runner struct {
-	Env      *object.Environment
-	modules  map[string]*object.Dict
-	baseDir  string
-	resolver *module.Resolver
-	loader   *module.Loader
+	Env          *object.Environment
+	modules      map[string]*object.Dict
+	baseDir      string
+	resolver     *module.Resolver
+	loader       *module.Loader
+	loadStack    []string
+	loadIndex    map[string]int
+	maxRecursion int
+	recursion    int
+	maxMemory    int64
+	budget       *limits.Budget
 }
 
 func NewRunner() *Runner {
+	ctx.Budget = nil
 	return &Runner{
-		Env:     object.NewEnvironment(),
-		modules: map[string]*object.Dict{},
+		Env:       object.NewEnvironment(),
+		modules:   map[string]*object.Dict{},
+		loadStack: []string{},
+		loadIndex: map[string]int{},
 	}
+}
+
+func (r *Runner) SetMaxRecursion(max int) {
+	if max < 0 {
+		max = 0
+	}
+	r.maxRecursion = max
+}
+
+func (r *Runner) SetMaxMemory(max int64) {
+	if max < 0 {
+		max = 0
+	}
+	r.maxMemory = max
+	r.budget = limits.NewBudget(max)
+	ctx.Budget = r.budget
+}
+
+func (r *Runner) SetBudget(b *limits.Budget) {
+	r.budget = b
+	ctx.Budget = b
 }
 
 func (r *Runner) Eval(node ast.Node) object.Object {
@@ -84,6 +116,21 @@ func (r *Runner) RunFile(path string) object.Object {
 		return mod
 	}
 
+	if idx, ok := r.loadIndex[abs]; ok {
+		chain := append([]string{}, r.loadStack[idx:]...)
+		chain = append(chain, abs)
+		return &object.Error{Message: fmt.Sprintf("WM0001 import cycle: %s", strings.Join(chain, " -> "))}
+	}
+
+	r.loadIndex[abs] = len(r.loadStack)
+	r.loadStack = append(r.loadStack, abs)
+	defer func() {
+		delete(r.loadIndex, abs)
+		if len(r.loadStack) > 0 {
+			r.loadStack = r.loadStack[:len(r.loadStack)-1]
+		}
+	}()
+
 	prevFile := ctx.File
 	ctx.File = abs
 	defer func() { ctx.File = prevFile }()
@@ -102,6 +149,10 @@ func (r *Runner) RunFile(path string) object.Object {
 	program := p.ParseProgram()
 	if len(p.Errors()) > 0 {
 		return &object.Error{Message: fmt.Sprintf("parse error in %s: %s", abs, p.Errors()[0])}
+	}
+
+	if err := module.CheckDuplicateExports(program, abs); err != nil {
+		return &object.Error{Message: err.Error()}
 	}
 
 	modEnv := object.NewEnvironment()
@@ -157,6 +208,10 @@ func (r *Runner) RunFileEnv(path string) (*object.Environment, object.Object) {
 		return nil, &object.Error{Message: fmt.Sprintf("parse error in %s: %s", abs, p.Errors()[0])}
 	}
 
+	if err := module.CheckDuplicateExports(program, abs); err != nil {
+		return nil, &object.Error{Message: err.Error()}
+	}
+
 	modEnv := object.NewEnvironment()
 	res := eval(program, modEnv, r, 0, 0)
 	if res != nil && res.Type() == object.ERROR_OBJ {
@@ -203,6 +258,9 @@ func (r *Runner) LoadModuleVM(path string) (*object.Dict, error) {
 		return r.loader.LoadBytecode(fromPath, spec, false)
 	}
 	mvm := vm.NewWithImporter(bc, absPath, importer)
+	if r.budget != nil {
+		mvm.SetBudget(r.budget)
+	}
 	mvm.SetModuleCache(r.modules)
 	if err := mvm.Run(); err != nil {
 		return nil, fmt.Errorf("vm error in %s: %v", absPath, err)

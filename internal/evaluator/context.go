@@ -1,8 +1,11 @@
 package evaluator
 
+import "welle/internal/limits"
+
 type RuntimeContext struct {
-	File  string
-	Stack []stackFrame
+	File   string
+	Stack  []stackFrame
+	Budget *limits.Budget
 }
 
 var ctx = &RuntimeContext{}

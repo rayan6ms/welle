@@ -1,0 +1,3 @@
+// expect: error contains "WM0001"
+
+import "./fixtures/cycle_a.wll" as cycle

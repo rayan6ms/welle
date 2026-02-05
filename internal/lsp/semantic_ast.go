@@ -1,6 +1,9 @@
 package lsp
 
-import "welle/internal/ast"
+import (
+	"welle/internal/ast"
+	"welle/internal/token"
+)
 
 type Key struct {
 	Line int
@@ -21,18 +24,35 @@ type scope struct {
 }
 
 var builtinFunctions = map[string]bool{
-	"print":     true,
-	"len":       true,
-	"str":       true,
-	"keys":      true,
-	"values":    true,
-	"range":     true,
-	"append":    true,
-	"push":      true,
-	"hasKey":    true,
-	"sort":      true,
-	"error":     true,
-	"writeFile": true,
+	"print":          true,
+	"len":            true,
+	"str":            true,
+	"join":           true,
+	"keys":           true,
+	"values":         true,
+	"range":          true,
+	"append":         true,
+	"push":           true,
+	"count":          true,
+	"remove":         true,
+	"get":            true,
+	"pop":            true,
+	"hasKey":         true,
+	"sort":           true,
+	"max":            true,
+	"abs":            true,
+	"sum":            true,
+	"reverse":        true,
+	"any":            true,
+	"all":            true,
+	"error":          true,
+	"writeFile":      true,
+	"sqrt":           true,
+	"input":          true,
+	"getpass":        true,
+	"group_digits":   true,
+	"format_float":   true,
+	"format_percent": true,
 }
 
 func identText(id *ast.Identifier) string {
@@ -159,20 +179,29 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 		case *ast.AssignStatement:
 			if n.Name != nil {
 				name := identText(n.Name)
-				switch kind, ok := resolveBinding(name); {
-				case ok && kind == bindParam:
-					markIdent(n.Name, ttParameter, 0)
-				case ok && kind == bindLocal:
-					markIdent(n.Name, ttVariable, 0)
-				case ok && kind == bindNamespace:
-					markIdent(n.Name, ttNamespace, 0)
-				default:
+				if n.Op == token.WALRUS {
 					cur().locals[name] = true
 					mods := modDecl
 					if isAllCapsIdent(name) {
 						mods |= modReadonly
 					}
 					markIdent(n.Name, ttVariable, mods)
+				} else {
+					switch kind, ok := resolveBinding(name); {
+					case ok && kind == bindParam:
+						markIdent(n.Name, ttParameter, 0)
+					case ok && kind == bindLocal:
+						markIdent(n.Name, ttVariable, 0)
+					case ok && kind == bindNamespace:
+						markIdent(n.Name, ttNamespace, 0)
+					default:
+						cur().locals[name] = true
+						mods := modDecl
+						if isAllCapsIdent(name) {
+							mods |= modReadonly
+						}
+						markIdent(n.Name, ttVariable, mods)
+					}
 				}
 			}
 			walkExpr(n.Value)
@@ -221,7 +250,9 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 			}
 
 		case *ast.ReturnStatement:
-			walkExpr(n.ReturnValue)
+			for _, rv := range n.ReturnValues {
+				walkExpr(rv)
+			}
 
 		case *ast.DeferStatement:
 			walkExpr(n.Call)
@@ -231,6 +262,21 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 
 		case *ast.ExpressionStatement:
 			walkExpr(n.Expression)
+
+		case *ast.DestructureAssignStatement:
+			for _, t := range n.Targets {
+				if t == nil || t.Name == nil {
+					continue
+				}
+				name := identText(t.Name)
+				cur().locals[name] = true
+				mods := modDecl
+				if isAllCapsIdent(name) {
+					mods |= modReadonly
+				}
+				markIdent(t.Name, ttVariable, mods)
+			}
+			walkExpr(n.Value)
 
 		case *ast.BlockStatement:
 			push()
@@ -290,7 +336,26 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 
 		case *ast.ForInStatement:
 			push()
-			if n.Var != nil {
+			if n.Destruct {
+				if n.Key != nil && n.Key.Value != "_" {
+					name := identText(n.Key)
+					cur().locals[name] = true
+					mods := modDecl
+					if isAllCapsIdent(name) {
+						mods |= modReadonly
+					}
+					markIdent(n.Key, ttVariable, mods)
+				}
+				if n.Value != nil && n.Value.Value != "_" {
+					name := identText(n.Value)
+					cur().locals[name] = true
+					mods := modDecl
+					if isAllCapsIdent(name) {
+						mods |= modReadonly
+					}
+					markIdent(n.Value, ttVariable, mods)
+				}
+			} else if n.Var != nil {
 				name := identText(n.Var)
 				cur().locals[name] = true
 				mods := modDecl
@@ -389,8 +454,21 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 			walkExpr(n.Left)
 			walkExpr(n.Right)
 
+		case *ast.ConditionalExpression:
+			walkExpr(n.Cond)
+			walkExpr(n.Then)
+			walkExpr(n.Else)
+
+		case *ast.CondExpr:
+			walkExpr(n.Cond)
+			walkExpr(n.Then)
+			walkExpr(n.Else)
+
 		case *ast.PrefixExpression:
 			walkExpr(n.Right)
+
+		case *ast.SpreadExpression:
+			walkExpr(n.Value)
 
 		case *ast.IndexExpression:
 			walkExpr(n.Left)
@@ -404,14 +482,39 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 			if n.High != nil {
 				walkExpr(n.High)
 			}
+			if n.Step != nil {
+				walkExpr(n.Step)
+			}
 
 		case *ast.ListLiteral:
 			for _, el := range n.Elements {
 				walkExpr(el)
 			}
 
+		case *ast.ListComprehension:
+			walkExpr(n.Seq)
+			push()
+			if n.Var != nil {
+				name := identText(n.Var)
+				cur().locals[name] = true
+				mods := modDecl
+				if isAllCapsIdent(name) {
+					mods |= modReadonly
+				}
+				markIdent(n.Var, ttVariable, mods)
+			}
+			if n.Filter != nil {
+				walkExpr(n.Filter)
+			}
+			walkExpr(n.Elem)
+			pop()
+
 		case *ast.DictLiteral:
 			for _, p := range n.Pairs {
+				if p.Shorthand != nil {
+					walkExpr(p.Shorthand)
+					continue
+				}
 				walkExpr(p.Key)
 				walkExpr(p.Value)
 			}
@@ -427,6 +530,66 @@ func CollectSemantic(program *ast.Program) map[Key]Classified {
 			if n.Default != nil {
 				walkExpr(n.Default)
 			}
+
+		case *ast.FunctionLiteral:
+			push()
+			for _, p := range n.Parameters {
+				pName := identText(p)
+				if pName != "" {
+					cur().params[pName] = true
+				}
+				markIdent(p, ttParameter, modDecl)
+			}
+			if n.Body != nil {
+				for _, st := range n.Body.Statements {
+					walkStmt(st)
+				}
+			}
+			pop()
+
+		case *ast.TemplateLiteral:
+			if n.Tag != nil {
+				walkExpr(n.Tag)
+			}
+			for _, ex := range n.Exprs {
+				walkExpr(ex)
+			}
+
+		case *ast.AssignExpression:
+			switch left := n.Left.(type) {
+			case *ast.Identifier:
+				name := identText(left)
+				if n.Op == token.WALRUS {
+					cur().locals[name] = true
+					mods := modDecl
+					if isAllCapsIdent(name) {
+						mods |= modReadonly
+					}
+					markIdent(left, ttVariable, mods)
+				} else {
+					switch kind, ok := resolveBinding(name); {
+					case ok && kind == bindParam:
+						markIdent(left, ttParameter, 0)
+					case ok && kind == bindLocal:
+						markIdent(left, ttVariable, 0)
+					case ok && kind == bindNamespace:
+						markIdent(left, ttNamespace, 0)
+					default:
+						cur().locals[name] = true
+						mods := modDecl
+						if isAllCapsIdent(name) {
+							mods |= modReadonly
+						}
+						markIdent(left, ttVariable, mods)
+					}
+				}
+			case *ast.IndexExpression:
+				walkExpr(left.Left)
+				walkExpr(left.Index)
+			case *ast.MemberExpression:
+				walkExpr(left.Object)
+			}
+			walkExpr(n.Value)
 		}
 	}
 

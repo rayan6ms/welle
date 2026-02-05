@@ -47,6 +47,58 @@
     "strings": {
       "patterns": [
         {
+          "name": "string.interpolated.welle",
+          "begin": "t\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "string.quoted.double.welle"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "string.quoted.double.welle"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.welle",
+              "match": "\\\\(n|r|t|\\\\|\"|0)"
+            },
+            {
+              "name": "meta.interpolation.welle",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "patterns": [
+                {
+                  "include": "#comments"
+                },
+                {
+                  "include": "#strings"
+                },
+                {
+                  "include": "#numbers"
+                },
+                {
+                  "include": "#keywords"
+                },
+                {
+                  "include": "#operators"
+                },
+                {
+                  "include": "#function_calls"
+                },
+                {
+                  "include": "#constants"
+                },
+                {
+                  "include": "#identifiers"
+                }
+              ]
+            }
+          ]
+        },
+        {
           "name": "string.quoted.double.welle",
           "begin": "\"",
           "end": "\"",
@@ -63,11 +115,27 @@
       "patterns": [
         {
           "name": "constant.numeric.float.welle",
-          "match": "\\b\\d+\\.\\d+\\b"
+          "match": "\\b\\d+(?:_\\d+)*\\.\\d+(?:_\\d+)*(?:[eE][+-]?\\d+(?:_\\d+)*)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.welle",
+          "match": "\\b\\d+(?:_\\d+)*[eE][+-]?\\d+(?:_\\d+)*\\b"
         },
         {
           "name": "constant.numeric.integer.welle",
-          "match": "\\b\\d+\\b"
+          "match": "\\b0[bB][01]+(?:_[01]+)*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.welle",
+          "match": "\\b0[oO][0-7]+(?:_[0-7]+)*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.welle",
+          "match": "\\b0[xX][0-9A-Fa-f]+(?:_[0-9A-Fa-f]+)*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.welle",
+          "match": "\\b\\d+(?:_\\d+)*\\b"
         }
       ]
     },
@@ -83,7 +151,7 @@
         },
         {
           "name": "keyword.operator.word.welle",
-          "match": "\\b(and|or|not)\\b"
+          "match": "\\b(and|or|not|is)\\b"
         },
         {
           "name": "storage.type.function.welle",
@@ -91,7 +159,7 @@
         },
         {
           "name": "constant.language.welle",
-          "match": "\\b(true|false|nil)\\b"
+          "match": "\\b(true|false|nil|null)\\b"
         }
       ]
     },
@@ -99,7 +167,7 @@
       "patterns": [
         {
           "name": "keyword.operator.welle",
-          "match": "(==|!=|<=|>=|=|<|>|\\+|-|\\*|/|%|\\.|:)"
+          "match": "(\\+=|-=|\\*=|/=|%=|==|!=|<=|>=|<<|>>|\\.\\.\\.|~|\\^|\\||&|!|=|<|>|\\+|-|\\*|/|%|\\.|\\?|:)"
         }
       ]
     },
@@ -120,7 +188,7 @@
       "patterns": [
         {
           "name": "meta.function.call.welle",
-          "match": "\\b(?!if\\b|while\\b|for\\b|switch\\b|match\\b|return\\b|func\\b|import\\b|from\\b|export\\b|as\\b|in\\b|and\\b|or\\b|not\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "match": "\\b(?!if\\b|while\\b|for\\b|switch\\b|match\\b|return\\b|func\\b|import\\b|from\\b|export\\b|as\\b|in\\b|and\\b|or\\b|not\\b|is\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
           "captures": {
             "1": {
               "name": "entity.name.function.welle"

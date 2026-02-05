@@ -2,7 +2,7 @@
   "name": "welle",
   "displayName": "Welle",
   "description": "Language support for Welle (.wll)",
-  "version": "0.3.2",
+  "version": "0.4.1",
   "publisher": "welle",
   "icon": "media/welle.png",
   "scripts": {

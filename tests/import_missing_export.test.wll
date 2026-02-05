@@ -1,0 +1,3 @@
+// expect: error contains "missing export"
+
+from "./fixtures/exports.wll" import missing_value

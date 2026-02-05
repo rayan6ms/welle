@@ -3,10 +3,13 @@ package vm
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"welle/internal/code"
 	"welle/internal/compiler"
+	"welle/internal/limits"
 	"welle/internal/object"
+	"welle/internal/semantics"
 )
 
 const StackSize = 2048
@@ -34,8 +37,15 @@ type VM struct {
 	importer  Importer
 	modules   map[string]*object.Dict
 	exports   *object.Dict
+	imports   *importTracker
 
 	pendingErr *object.Error
+
+	maxRecursion int
+	maxSteps     int64
+	stepsLeft    int64
+
+	budget *limits.Budget
 }
 
 type trap struct {
@@ -52,6 +62,36 @@ type fin struct {
 }
 
 type Importer func(fromPath, spec string) (*compiler.Bytecode, string, error)
+
+type importTracker struct {
+	stack []string
+	index map[string]int
+}
+
+func newImportTracker() *importTracker {
+	return &importTracker{
+		stack: []string{},
+		index: map[string]int{},
+	}
+}
+
+func (t *importTracker) enter(path string) error {
+	if idx, ok := t.index[path]; ok {
+		chain := append([]string{}, t.stack[idx:]...)
+		chain = append(chain, path)
+		return fmt.Errorf("WM0001 import cycle: %s", strings.Join(chain, " -> "))
+	}
+	t.index[path] = len(t.stack)
+	t.stack = append(t.stack, path)
+	return nil
+}
+
+func (t *importTracker) exit(path string) {
+	delete(t.index, path)
+	if len(t.stack) > 0 {
+		t.stack = t.stack[:len(t.stack)-1]
+	}
+}
 
 func New(bc *compiler.Bytecode) *VM {
 	mainFn := &object.CompiledFunction{
@@ -75,6 +115,7 @@ func New(bc *compiler.Bytecode) *VM {
 		framesIndex: 1,
 		modules:     map[string]*object.Dict{},
 		exports:     &object.Dict{Pairs: map[string]object.DictPair{}},
+		imports:     newImportTracker(),
 	}
 }
 
@@ -125,6 +166,13 @@ func (m *VM) pop() object.Object {
 	return o
 }
 
+func cellValue(cell *object.Cell) object.Object {
+	if cell.Value == nil {
+		return nilObj
+	}
+	return cell.Value
+}
+
 func (m *VM) Exports() *object.Dict {
 	return m.exports
 }
@@ -145,7 +193,41 @@ func (m *VM) SetModuleCache(cache map[string]*object.Dict) {
 	}
 }
 
+func (m *VM) SetMaxRecursion(max int) {
+	if max < 0 {
+		max = 0
+	}
+	m.maxRecursion = max
+}
+
+func (m *VM) SetMaxSteps(max int64) {
+	if max < 0 {
+		max = 0
+	}
+	m.maxSteps = max
+}
+
+func (m *VM) SetMaxMemory(max int64) {
+	if max < 0 {
+		max = 0
+	}
+	m.budget = limits.NewBudget(max)
+}
+
+func (m *VM) SetBudget(b *limits.Budget) {
+	m.budget = b
+}
+
 func (m *VM) Run() error {
+	if m.entryPath != "" {
+		if err := m.imports.enter(m.entryPath); err != nil {
+			return err
+		}
+		defer m.imports.exit(m.entryPath)
+	}
+	if m.maxSteps > 0 {
+		m.stepsLeft = m.maxSteps
+	}
 	return m.run(-1)
 }
 
@@ -167,11 +249,50 @@ func (m *VM) run(stopFrames int) error {
 		}
 		frame.ip++
 		op := code.Opcode(ins[frame.ip])
+		if m.maxSteps > 0 {
+			m.stepsLeft--
+			if m.stepsLeft < 0 {
+				errObj := &object.Error{Message: fmt.Sprintf("max instruction count exceeded (%d)", m.maxSteps)}
+				ip := frame.ip
+				if ip < 0 {
+					ip = 0
+				}
+				catchIP, ok := activeTryCatchIP(ins, ip)
+				if !ok {
+					catchIP, ok = firstTryCatchIP(ins)
+				}
+				if ok {
+					if errObj.Stack == "" {
+						errObj.Stack = m.formatStackTrace(errObj.Message)
+					}
+					m.sp = frame.basePointer
+					m.maxSteps = 0
+					m.stepsLeft = 0
+					if err := m.push(errObj); err != nil {
+						return err
+					}
+					frame.ip = catchIP - 1
+					continue
+				}
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 
 		switch op {
 		case code.OpConstant:
 			idx := int(code.ReadUint16(ins[frame.ip+1:]))
 			frame.ip += 2
+			if s, ok := m.constants[idx].(*object.String); ok {
+				if errObj := m.chargeMemory(object.CostStringBytes(len(s.Value))); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+			}
 			if err := m.tryPush(m.constants[idx]); err != nil {
 				return err
 			}
@@ -203,7 +324,54 @@ func (m *VM) run(stopFrames int) error {
 			for i := n - 1; i >= 0; i-- {
 				elems[i] = m.pop()
 			}
+			if errObj := m.chargeMemory(object.CostArray(len(elems))); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := m.tryPush(&object.Array{Elements: elems}); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpArrayAppend:
+			val := m.pop()
+			arrObj := m.pop()
+			arr, ok := arrObj.(*object.Array)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "array append expects ARRAY"}); err != nil {
+					return err
+				}
+				continue
+			}
+			if errObj := m.chargeMemory(object.CostArrayElements(1)); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			arr.Elements = append(arr.Elements, val)
+			if err := m.tryPush(arr); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpTuple:
+			n := int(code.ReadUint16(ins[frame.ip+1:]))
+			frame.ip += 2
+
+			elems := make([]object.Object, n)
+			for i := n - 1; i >= 0; i-- {
+				elems[i] = m.pop()
+			}
+			if errObj := m.chargeMemory(object.CostTuple(len(elems))); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(&object.Tuple{Elements: elems}); err != nil {
 				return err
 			}
 			continue
@@ -213,10 +381,15 @@ func (m *VM) run(stopFrames int) error {
 			frame.ip += 2
 
 			pairs := make(map[string]object.DictPair, n)
+			raw := make([]object.DictPair, n)
 			for i := 0; i < n; i++ {
 				val := m.pop()
 				keyObj := m.pop()
-
+				raw[i] = object.DictPair{Key: keyObj, Value: val}
+			}
+			// Preserve source order so duplicate keys are last-wins.
+			for i := n - 1; i >= 0; i-- {
+				keyObj := raw[i].Key
 				hk, ok := object.HashKeyOf(keyObj)
 				if !ok {
 					if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("unusable as dict key: %s", keyObj.Type())}); err != nil {
@@ -224,9 +397,130 @@ func (m *VM) run(stopFrames int) error {
 					}
 					continue
 				}
-				pairs[object.HashKeyString(hk)] = object.DictPair{Key: keyObj, Value: val}
+				pairs[object.HashKeyString(hk)] = raw[i]
+			}
+			if errObj := m.chargeMemory(object.CostDict(len(pairs))); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
 			}
 			if err := m.tryPush(&object.Dict{Pairs: pairs}); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpIterInit:
+			iterable := m.pop()
+			switch v := iterable.(type) {
+			case *object.Array:
+				if err := m.tryPush(&vmIterator{items: v.Elements}); err != nil {
+					return err
+				}
+			case *object.Dict:
+				pairs := object.SortedDictPairs(v)
+				items := make([]object.Object, 0, len(pairs))
+				for _, pair := range pairs {
+					items = append(items, pair.Key)
+				}
+				if err := m.tryPush(&vmIterator{items: items}); err != nil {
+					return err
+				}
+			case *object.String:
+				rs := []rune(v.Value)
+				items := make([]object.Object, 0, len(rs))
+				for _, rch := range rs {
+					s := &object.String{Value: string(rch)}
+					if errObj := m.chargeMemory(object.CostStringBytes(len(s.Value))); errObj != nil {
+						if err := m.raiseObj(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+					items = append(items, s)
+				}
+				if err := m.tryPush(&vmIterator{items: items}); err != nil {
+					return err
+				}
+			default:
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("cannot iterate over type: %s", iterable.Type())}); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case code.OpIterInitComp:
+			iterable := m.pop()
+			switch v := iterable.(type) {
+			case *object.Array:
+				if err := m.tryPush(&vmIterator{items: v.Elements}); err != nil {
+					return err
+				}
+			case *object.Dict:
+				pairs := object.SortedDictPairs(v)
+				items := make([]object.Object, 0, len(pairs))
+				for _, pair := range pairs {
+					items = append(items, pair.Key)
+				}
+				if err := m.tryPush(&vmIterator{items: items}); err != nil {
+					return err
+				}
+			case *object.String:
+				rs := []rune(v.Value)
+				items := make([]object.Object, 0, len(rs))
+				for _, rch := range rs {
+					s := &object.String{Value: string(rch)}
+					if errObj := m.chargeMemory(object.CostStringBytes(len(s.Value))); errObj != nil {
+						if err := m.raiseObj(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+					items = append(items, s)
+				}
+				if err := m.tryPush(&vmIterator{items: items}); err != nil {
+					return err
+				}
+			default:
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("cannot iterate %s in comprehension", iterable.Type())}); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case code.OpIterInitDict:
+			iterable := m.pop()
+			switch v := iterable.(type) {
+			case *object.Dict:
+				pairs := object.SortedDictPairs(v)
+				items := make([]object.Object, 0, len(pairs))
+				for _, pair := range pairs {
+					items = append(items, pair.Key)
+				}
+				if err := m.tryPush(&vmIterator{items: items}); err != nil {
+					return err
+				}
+			default:
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("for-in destructuring requires dict, got %s", iterable.Type())}); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case code.OpIterNext:
+			iterObj := m.pop()
+			it, ok := iterObj.(*vmIterator)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "invalid iterator"}); err != nil {
+					return err
+				}
+				continue
+			}
+			val, ok := it.next()
+			if err := m.tryPush(val); err != nil {
+				return err
+			}
+			if err := m.tryPush(nativeBool(ok)); err != nil {
 				return err
 			}
 			continue
@@ -240,6 +534,30 @@ func (m *VM) run(stopFrames int) error {
 				i, ok := idx.(*object.Integer)
 				if !ok {
 					if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("array index must be INTEGER, got %s", idx.Type())}); err != nil {
+						return err
+					}
+					continue
+				}
+				n := int(i.Value)
+				L := len(l.Elements)
+				if n < 0 {
+					n = L + n
+				}
+				if n < 0 || n >= L {
+					if err := m.raiseObj(&object.Error{Message: "index out of range"}); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := m.tryPush(l.Elements[n]); err != nil {
+					return err
+				}
+				continue
+
+			case *object.Tuple:
+				i, ok := idx.(*object.Integer)
+				if !ok {
+					if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("tuple index must be INTEGER, got %s", idx.Type())}); err != nil {
 						return err
 					}
 					continue
@@ -280,7 +598,14 @@ func (m *VM) run(stopFrames int) error {
 					}
 					continue
 				}
-				if err := m.tryPush(&object.String{Value: string(rs[n])}); err != nil {
+				out := &object.String{Value: string(rs[n])}
+				if errObj := m.chargeMemory(object.CostStringBytes(len(out.Value))); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := m.tryPush(out); err != nil {
 					return err
 				}
 				continue
@@ -348,35 +673,21 @@ func (m *VM) run(stopFrames int) error {
 					continue
 				}
 				continue
-			case *object.Error:
-				switch nameObj.Value {
-				case "message":
-					if err := m.push(&object.String{Value: l.Message}); err != nil {
-						if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
-							return err
-						}
-					}
-					continue
-				case "code":
-					if err := m.push(&object.Integer{Value: l.Code}); err != nil {
-						if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
-							return err
-						}
-					}
-					continue
-				case "stack":
-					if err := m.push(&object.String{Value: l.Stack}); err != nil {
-						if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
-							return err
-						}
-					}
-					continue
-				}
-				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("unknown member on ERROR: %s", nameObj.Value)}); err != nil {
-					return err
-				}
-				continue
 			default:
+				if getter, ok := left.(object.MemberGetter); ok {
+					if val, ok := getter.GetMember(nameObj.Value); ok {
+						if err := m.push(val); err != nil {
+							if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
+								return err
+							}
+						}
+						continue
+					}
+					if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("unknown member on %s: %s", left.Type(), nameObj.Value)}); err != nil {
+						return err
+					}
+					continue
+				}
 				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("no member access on %s", left.Type())}); err != nil {
 					return err
 				}
@@ -416,7 +727,16 @@ func (m *VM) run(stopFrames int) error {
 			if d.Pairs == nil {
 				d.Pairs = map[string]object.DictPair{}
 			}
-			d.Pairs[object.HashKeyString(hk)] = object.DictPair{Key: nameObj, Value: val}
+			keyStr := object.HashKeyString(hk)
+			if _, exists := d.Pairs[keyStr]; !exists {
+				if errObj := m.chargeMemory(object.CostDictEntry()); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			d.Pairs[keyStr] = object.DictPair{Key: nameObj, Value: val}
 			if err := m.tryPush(val); err != nil {
 				return err
 			}
@@ -464,7 +784,16 @@ func (m *VM) run(stopFrames int) error {
 				if l.Pairs == nil {
 					l.Pairs = map[string]object.DictPair{}
 				}
-				l.Pairs[object.HashKeyString(hk)] = object.DictPair{Key: idx, Value: val}
+				keyStr := object.HashKeyString(hk)
+				if _, exists := l.Pairs[keyStr]; !exists {
+					if errObj := m.chargeMemory(object.CostDictEntry()); errObj != nil {
+						if err := m.raiseObj(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+				}
+				l.Pairs[keyStr] = object.DictPair{Key: idx, Value: val}
 				if err := m.tryPush(val); err != nil {
 					return err
 				}
@@ -484,30 +813,31 @@ func (m *VM) run(stopFrames int) error {
 			}
 
 		case code.OpSlice:
+			stepObj := m.pop()
 			highObj := m.pop()
 			lowObj := m.pop()
 			left := m.pop()
 
-			toOptInt := func(o object.Object) (*int64, error) {
+			toOptInt := func(o object.Object, label string) (*int64, error) {
 				if _, ok := o.(*object.Nil); ok {
 					return nil, nil
 				}
 				i, ok := o.(*object.Integer)
 				if !ok {
-					return nil, fmt.Errorf("slice bound must be INTEGER or nil, got %s", o.Type())
+					return nil, fmt.Errorf("slice %s must be INTEGER, got: %s", label, o.Type())
 				}
 				v := i.Value
 				return &v, nil
 			}
 
-			lowPtr, err := toOptInt(lowObj)
+			lowPtr, err := toOptInt(lowObj, "low")
 			if err != nil {
 				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 					return err
 				}
 				continue
 			}
-			highPtr, err := toOptInt(highObj)
+			highPtr, err := toOptInt(highObj, "high")
 			if err != nil {
 				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 					return err
@@ -515,45 +845,32 @@ func (m *VM) run(stopFrames int) error {
 				continue
 			}
 
-			norm := func(x, length int64) int64 {
-				if x < 0 {
-					return length + x
+			stepVal := int64(1)
+			if _, ok := stepObj.(*object.Nil); !ok {
+				i, ok := stepObj.(*object.Integer)
+				if !ok {
+					if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("slice step must be INTEGER, got: %s", stepObj.Type())}); err != nil {
+						return err
+					}
+					continue
 				}
-				return x
-			}
-			clamp := func(x, lo, hi int64) int64 {
-				if x < lo {
-					return lo
+				if i.Value == 0 {
+					if err := m.raiseObj(&object.Error{Message: "slice step cannot be 0"}); err != nil {
+						return err
+					}
+					continue
 				}
-				if x > hi {
-					return hi
-				}
-				return x
-			}
-			bounds := func(length int64) (int64, int64) {
-				lo := int64(0)
-				hi := length
-				if lowPtr != nil {
-					lo = norm(*lowPtr, length)
-				}
-				if highPtr != nil {
-					hi = norm(*highPtr, length)
-				}
-				lo = clamp(lo, 0, length)
-				hi = clamp(hi, 0, length)
-				if lo > hi {
-					lo = hi
-				}
-				return lo, hi
+				stepVal = i.Value
 			}
 
 			switch l := left.(type) {
 			case *object.Array:
-				length := int64(len(l.Elements))
-				lo, hi := bounds(length)
-				out := make([]object.Object, 0, int(hi-lo))
-				for i := int(lo); i < int(hi); i++ {
-					out = append(out, l.Elements[i])
+				out := sliceElements(l.Elements, lowPtr, highPtr, stepVal)
+				if errObj := m.chargeMemory(object.CostArray(len(out))); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
 				}
 				if err := m.tryPush(&object.Array{Elements: out}); err != nil {
 					return err
@@ -562,9 +879,14 @@ func (m *VM) run(stopFrames int) error {
 
 			case *object.String:
 				rs := []rune(l.Value)
-				length := int64(len(rs))
-				lo, hi := bounds(length)
-				if err := m.tryPush(&object.String{Value: string(rs[int(lo):int(hi)])}); err != nil {
+				out := &object.String{Value: string(sliceRunes(rs, lowPtr, highPtr, stepVal))}
+				if errObj := m.chargeMemory(object.CostStringBytes(len(out.Value))); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := m.tryPush(out); err != nil {
 					return err
 				}
 				continue
@@ -576,6 +898,107 @@ func (m *VM) run(stopFrames int) error {
 				continue
 			}
 
+		case code.OpUnpackTuple:
+			n := int(code.ReadUint16(ins[frame.ip+1:]))
+			frame.ip += 2
+
+			val := m.pop()
+			var elems []object.Object
+			switch seq := val.(type) {
+			case *object.Tuple:
+				elems = seq.Elements
+			case *object.Array:
+				elems = seq.Elements
+			default:
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("unpack expects tuple, got %s", val.Type())}); err != nil {
+					return err
+				}
+				continue
+			}
+			if len(elems) != n {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("tuple arity mismatch: expected %d, got %d", n, len(elems))}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(val); err != nil {
+				return err
+			}
+			for i := 0; i < n; i++ {
+				if err := m.tryPush(elems[i]); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case code.OpUnpackStar:
+			n := int(code.ReadUint16(ins[frame.ip+1:]))
+			starIdx := int(code.ReadUint16(ins[frame.ip+3:]))
+			frame.ip += 4
+
+			val := m.pop()
+			var elems []object.Object
+			switch seq := val.(type) {
+			case *object.Tuple:
+				elems = seq.Elements
+			case *object.Array:
+				elems = seq.Elements
+			default:
+				if err := m.raiseObj(&object.Error{Message: "cannot unpack non-sequence"}); err != nil {
+					return err
+				}
+				continue
+			}
+			minLen := n - 1
+			if len(elems) < minLen {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("not enough values to unpack (expected at least %d, got %d)", minLen, len(elems))}); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if err := m.tryPush(val); err != nil {
+				return err
+			}
+
+			headCount := starIdx
+			tailCount := n - starIdx - 1
+			for i := 0; i < headCount; i++ {
+				if err := m.tryPush(elems[i]); err != nil {
+					return err
+				}
+			}
+
+			midStart := headCount
+			midEnd := len(elems) - tailCount
+			mid := make([]object.Object, 0, midEnd-midStart)
+			for i := midStart; i < midEnd; i++ {
+				mid = append(mid, elems[i])
+			}
+			if errObj := m.chargeMemory(object.CostArray(len(mid))); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(&object.Array{Elements: mid}); err != nil {
+				return err
+			}
+
+			for i := 0; i < tailCount; i++ {
+				if err := m.tryPush(elems[len(elems)-tailCount+i]); err != nil {
+					return err
+				}
+			}
+			continue
+
+		case code.OpSpread:
+			val := m.pop()
+			if err := m.tryPush(&object.Spread{Value: val}); err != nil {
+				return err
+			}
+			continue
+
 		case code.OpPop:
 			m.pop()
 			continue
@@ -584,6 +1007,24 @@ func (m *VM) run(stopFrames int) error {
 			idx := int(code.ReadUint16(ins[frame.ip+1:]))
 			frame.ip += 2
 			m.globals[idx] = m.pop()
+			continue
+
+		case code.OpDefineGlobal:
+			idx := int(code.ReadUint16(ins[frame.ip+1:]))
+			nameIdx := int(code.ReadUint16(ins[frame.ip+3:]))
+			frame.ip += 4
+			val := m.pop()
+			if m.globals[idx] != nil {
+				name := "<unknown>"
+				if nameObj, ok := m.constants[nameIdx].(*object.String); ok {
+					name = nameObj.Value
+				}
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("cannot redeclare %q in this scope", name)}); err != nil {
+					return err
+				}
+				continue
+			}
+			m.globals[idx] = val
 			continue
 
 		case code.OpGetGlobal:
@@ -640,7 +1081,11 @@ func (m *VM) run(stopFrames int) error {
 			}
 
 			modVM := NewWithImporter(bc, absPath, m.importer)
+			modVM.SetMaxRecursion(m.maxRecursion)
+			modVM.SetMaxSteps(m.maxSteps)
+			modVM.SetBudget(m.budget)
 			modVM.modules = m.modules
+			modVM.imports = m.imports
 			if err := modVM.Run(); err != nil {
 				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 					return err
@@ -696,7 +1141,11 @@ func (m *VM) run(stopFrames int) error {
 			mod, ok := m.modules[absPath]
 			if !ok {
 				modVM := NewWithImporter(bc, absPath, m.importer)
+				modVM.SetMaxRecursion(m.maxRecursion)
+				modVM.SetMaxSteps(m.maxSteps)
+				modVM.SetBudget(m.budget)
 				modVM.modules = m.modules
+				modVM.imports = m.imports
 				if err := modVM.Run(); err != nil {
 					if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 						return err
@@ -716,7 +1165,7 @@ func (m *VM) run(stopFrames int) error {
 			}
 			pair, ok := mod.Pairs[object.HashKeyString(hk)]
 			if !ok {
-				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("module has no exported member: %s", nameObj.Value)}); err != nil {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("missing export %q in module %q", nameObj.Value, pathObj.Value)}); err != nil {
 					return err
 				}
 				continue
@@ -757,16 +1206,56 @@ func (m *VM) run(stopFrames int) error {
 			}
 			continue
 
-		case code.OpAdd, code.OpSub, code.OpMul, code.OpDiv, code.OpMod:
-			if err := m.execBinaryNumericOp(op); err != nil {
+		case code.OpDictUpdate:
+			right := m.pop()
+			left := m.pop()
+			ld, ok := left.(*object.Dict)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "|= left operand must be dict"}); err != nil {
+					return err
+				}
+				continue
+			}
+			rd, ok := right.(*object.Dict)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "|= right operand must be dict"}); err != nil {
+					return err
+				}
+				continue
+			}
+			added := semantics.DictUpdateCount(ld, rd)
+			if added > 0 {
+				if errObj := m.chargeMemory(object.CostDictEntry() * int64(added)); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			semantics.DictUpdate(ld, rd)
+			if err := m.tryPush(ld); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpAdd, code.OpSub, code.OpMul, code.OpDiv, code.OpMod,
+			code.OpBitOr, code.OpBitAnd, code.OpBitXor, code.OpShl, code.OpShr:
+			if err := m.execBinaryOp(op); err != nil {
 				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 					return err
 				}
 			}
 			continue
 
-		case code.OpEqual, code.OpNotEqual, code.OpGreaterThan:
+		case code.OpEqual, code.OpNotEqual, code.OpIs, code.OpGreaterThan, code.OpLessThan, code.OpLessEqual, code.OpGreaterEqual:
 			if err := m.execComparison(op); err != nil {
+				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
+					return err
+				}
+			}
+			continue
+		case code.OpIn:
+			if err := m.execIn(); err != nil {
 				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
 					return err
 				}
@@ -797,12 +1286,34 @@ func (m *VM) run(stopFrames int) error {
 				return err
 			}
 			continue
+		case code.OpBitNot:
+			right := m.pop()
+			res, err := semantics.BitwiseUnary("~", right)
+			if err != nil {
+				if err := m.raiseObj(&object.Error{Message: err.Error()}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(res); err != nil {
+				return err
+			}
+			continue
 
 		case code.OpJumpNotTruthy:
 			pos := int(code.ReadUint16(ins[frame.ip+1:]))
 			frame.ip += 2
 			cond := m.pop()
 			if !isTruthy(cond) {
+				frame.ip = pos - 1
+			}
+			continue
+
+		case code.OpJumpIfNil:
+			pos := int(code.ReadUint16(ins[frame.ip+1:]))
+			frame.ip += 2
+			cond := m.stack[m.sp-1]
+			if cond.Type() == object.NIL_OBJ {
 				frame.ip = pos - 1
 			}
 			continue
@@ -865,6 +1376,13 @@ func (m *VM) run(stopFrames int) error {
 			switch obj := val.(type) {
 			case *object.Error:
 				errObj = obj
+				if errObj.IsValue {
+					errObj = &object.Error{
+						Message: errObj.Message,
+						Code:    errObj.Code,
+						Stack:   errObj.Stack,
+					}
+				}
 			case *object.String:
 				errObj = &object.Error{Message: obj.Value}
 			default:
@@ -884,7 +1402,13 @@ func (m *VM) run(stopFrames int) error {
 			localIndex := int(ins[frame.ip+1])
 			frame.ip += 1
 			bp := frame.basePointer
-			if err := m.tryPush(m.stack[bp+localIndex]); err != nil {
+			obj := m.stack[bp+localIndex]
+			if cell, ok := obj.(*object.Cell); ok {
+				obj = cellValue(cell)
+			} else if obj == nil {
+				obj = nilObj
+			}
+			if err := m.tryPush(obj); err != nil {
 				return err
 			}
 			continue
@@ -893,7 +1417,31 @@ func (m *VM) run(stopFrames int) error {
 			localIndex := int(ins[frame.ip+1])
 			frame.ip += 1
 			bp := frame.basePointer
-			m.stack[bp+localIndex] = m.pop()
+			val := m.pop()
+			if cell, ok := m.stack[bp+localIndex].(*object.Cell); ok {
+				cell.Value = val
+			} else {
+				m.stack[bp+localIndex] = val
+			}
+			continue
+
+		case code.OpDefineLocal:
+			localIndex := int(ins[frame.ip+1])
+			nameIdx := int(code.ReadUint16(ins[frame.ip+2:]))
+			frame.ip += 3
+			bp := frame.basePointer
+			val := m.pop()
+			if m.stack[bp+localIndex] != nil {
+				name := "<unknown>"
+				if nameObj, ok := m.constants[nameIdx].(*object.String); ok {
+					name = nameObj.Value
+				}
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("cannot redeclare %q in this scope", name)}); err != nil {
+					return err
+				}
+				continue
+			}
+			m.stack[bp+localIndex] = val
 			continue
 
 		case code.OpClosure:
@@ -910,12 +1458,39 @@ func (m *VM) run(stopFrames int) error {
 				continue
 			}
 
-			free := make([]object.Object, numFree)
+			free := make([]*object.Cell, numFree)
+			var memErr *object.Error
 			for i := 0; i < numFree; i++ {
-				free[i] = m.stack[m.sp-numFree+i]
+				obj := m.stack[m.sp-numFree+i]
+				cell, ok := obj.(*object.Cell)
+				if !ok {
+					if obj == nil {
+						obj = nilObj
+					}
+					if memErr == nil {
+						if errObj := m.chargeMemory(object.CostCell()); errObj != nil {
+							memErr = errObj
+							break
+						}
+					}
+					cell = &object.Cell{Value: obj}
+				}
+				free[i] = cell
+			}
+			if memErr != nil {
+				if err := m.raiseObj(memErr); err != nil {
+					return err
+				}
+				continue
 			}
 			m.sp -= numFree
 
+			if errObj := m.chargeMemory(object.CostClosure(len(free))); errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
 			cl := &object.Closure{Fn: fn, Free: free}
 			if err := m.tryPush(cl); err != nil {
 				return err
@@ -926,7 +1501,47 @@ func (m *VM) run(stopFrames int) error {
 			freeIndex := int(ins[frame.ip+1])
 			frame.ip += 1
 			cl := m.currentFrame().cl
+			if err := m.tryPush(cellValue(cl.Free[freeIndex])); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpSetFree:
+			freeIndex := int(ins[frame.ip+1])
+			frame.ip += 1
+			cl := m.currentFrame().cl
+			cl.Free[freeIndex].Value = m.pop()
+			continue
+
+		case code.OpGetFreeCell:
+			freeIndex := int(ins[frame.ip+1])
+			frame.ip += 1
+			cl := m.currentFrame().cl
 			if err := m.tryPush(cl.Free[freeIndex]); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpGetLocalCell:
+			localIndex := int(ins[frame.ip+1])
+			frame.ip += 1
+			bp := frame.basePointer
+			obj := m.stack[bp+localIndex]
+			cell, ok := obj.(*object.Cell)
+			if !ok {
+				if obj == nil {
+					obj = nilObj
+				}
+				if errObj := m.chargeMemory(object.CostCell()); errObj != nil {
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+				cell = &object.Cell{Value: obj}
+				m.stack[bp+localIndex] = cell
+			}
+			if err := m.tryPush(cell); err != nil {
 				return err
 			}
 			continue
@@ -949,15 +1564,74 @@ func (m *VM) run(stopFrames int) error {
 				}
 				m.pop() // callee
 
+				if b == builtins[builtinIndex["map"]] {
+					res, ok, err := m.runBuiltinMap(args)
+					if err != nil {
+						return err
+					}
+					if !ok {
+						continue
+					}
+					if errObj, ok := res.(*object.Error); ok {
+						if err := m.raiseObj(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+					if memErr := m.chargeObject(res); memErr != nil {
+						if err := m.raiseObj(memErr); err != nil {
+							return err
+						}
+						continue
+					}
+					if err := m.tryPush(res); err != nil {
+						return err
+					}
+					continue
+				}
+
 				res := b.Fn(args...)
 				if errObj, ok := res.(*object.Error); ok {
 					if b == builtins[builtinIndex["error"]] {
+						if errObj.Stack == "" {
+							errObj.Stack = m.formatStackTrace(errObj.Message)
+						}
+						if memErr := m.chargeMemory(object.CostError()); memErr != nil {
+							if err := m.raiseObj(memErr); err != nil {
+								return err
+							}
+							continue
+						}
 						if err := m.tryPush(errObj); err != nil {
 							return err
 						}
 						continue
 					}
 					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+				if b == builtins[builtinIndex["sort"]] {
+					if arr, ok := res.(*object.Array); ok {
+						extra := int64(0)
+						for _, el := range arr.Elements {
+							if s, ok := el.(*object.String); ok {
+								extra += object.CostStringBytes(len(s.Value))
+							}
+						}
+						if extra > 0 {
+							if memErr := m.chargeMemory(extra); memErr != nil {
+								if err := m.raiseObj(memErr); err != nil {
+									return err
+								}
+								continue
+							}
+						}
+					}
+				}
+				if memErr := m.chargeObject(res); memErr != nil {
+					if err := m.raiseObj(memErr); err != nil {
 						return err
 					}
 					continue
@@ -986,12 +1660,269 @@ func (m *VM) run(stopFrames int) error {
 				}
 				continue
 			}
+			if m.maxRecursion > 0 && m.framesIndex >= m.maxRecursion+1 {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("max recursion depth exceeded (%d)", m.maxRecursion)}); err != nil {
+					return err
+				}
+				continue
+			}
 
 			basePointer := m.sp - numArgs
 			newFrame := NewFrame(cl, basePointer)
 			m.pushFrame(newFrame)
 
 			m.sp = basePointer + fn.NumLocals
+			continue
+
+		case code.OpCallSpread:
+			numArgs := int(ins[frame.ip+1])
+			frame.ip += 1
+
+			rawArgs := make([]object.Object, numArgs)
+			for i := numArgs - 1; i >= 0; i-- {
+				rawArgs[i] = m.pop()
+			}
+			callee := m.pop()
+
+			args, errObj := m.expandSpreadArgs(rawArgs)
+			if errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if b, ok := callee.(*object.Builtin); ok {
+				if b == builtins[builtinIndex["map"]] {
+					res, ok, err := m.runBuiltinMap(args)
+					if err != nil {
+						return err
+					}
+					if !ok {
+						continue
+					}
+					if errObj, ok := res.(*object.Error); ok {
+						if err := m.raiseObj(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+					if memErr := m.chargeObject(res); memErr != nil {
+						if err := m.raiseObj(memErr); err != nil {
+							return err
+						}
+						continue
+					}
+					if err := m.tryPush(res); err != nil {
+						return err
+					}
+					continue
+				}
+
+				res := b.Fn(args...)
+				if errObj, ok := res.(*object.Error); ok {
+					if b == builtins[builtinIndex["error"]] {
+						if errObj.Stack == "" {
+							errObj.Stack = m.formatStackTrace(errObj.Message)
+						}
+						if memErr := m.chargeMemory(object.CostError()); memErr != nil {
+							if err := m.raiseObj(memErr); err != nil {
+								return err
+							}
+							continue
+						}
+						if err := m.tryPush(errObj); err != nil {
+							return err
+						}
+						continue
+					}
+					if err := m.raiseObj(errObj); err != nil {
+						return err
+					}
+					continue
+				}
+				if b == builtins[builtinIndex["sort"]] {
+					if arr, ok := res.(*object.Array); ok {
+						extra := int64(0)
+						for _, el := range arr.Elements {
+							if s, ok := el.(*object.String); ok {
+								extra += object.CostStringBytes(len(s.Value))
+							}
+						}
+						if extra > 0 {
+							if memErr := m.chargeMemory(extra); memErr != nil {
+								if err := m.raiseObj(memErr); err != nil {
+									return err
+								}
+								continue
+							}
+						}
+					}
+				}
+				if memErr := m.chargeObject(res); memErr != nil {
+					if err := m.raiseObj(memErr); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := m.tryPush(res); err != nil {
+					return err
+				}
+				continue
+			}
+
+			cl, ok := callee.(*object.Closure)
+			if !ok {
+				typeName := "<nil>"
+				if callee != nil {
+					typeName = string(callee.Type())
+				}
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("attempted to call non-function: %s", typeName)}); err != nil {
+					return err
+				}
+				continue
+			}
+			fn := cl.Fn
+			if len(args) != fn.NumParameters {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("wrong number of arguments: expected %d, got %d", fn.NumParameters, len(args))}); err != nil {
+					return err
+				}
+				continue
+			}
+			if m.maxRecursion > 0 && m.framesIndex >= m.maxRecursion+1 {
+				if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("max recursion depth exceeded (%d)", m.maxRecursion)}); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if err := m.tryPush(callee); err != nil {
+				return err
+			}
+			for _, arg := range args {
+				if err := m.tryPush(arg); err != nil {
+					return err
+				}
+			}
+
+			basePointer := m.sp - len(args)
+			newFrame := NewFrame(cl, basePointer)
+			m.pushFrame(newFrame)
+
+			m.sp = basePointer + fn.NumLocals
+			continue
+
+		case code.OpCallMethod:
+			nameIdx := int(code.ReadUint16(ins[frame.ip+1:]))
+			numArgs := int(ins[frame.ip+3])
+			frame.ip += 3
+
+			nameObj, ok := m.constants[nameIdx].(*object.String)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "member name must be string constant"}); err != nil {
+					return err
+				}
+				continue
+			}
+
+			args := make([]object.Object, numArgs)
+			for i := numArgs - 1; i >= 0; i-- {
+				args[i] = m.pop()
+			}
+			recv := m.pop()
+
+			if d, ok := recv.(*object.Dict); ok {
+				hk, ok := object.HashKeyOf(nameObj)
+				if !ok {
+					if err := m.raiseObj(&object.Error{Message: "invalid member key"}); err != nil {
+						return err
+					}
+					continue
+				}
+				if pair, exists := d.Pairs[object.HashKeyString(hk)]; exists {
+					if err := m.callWithArgs(pair.Value, args); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+
+			res := applyMethod(nameObj.Value, recv, args)
+			if errObj, ok := res.(*object.Error); ok {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			if memErr := m.chargeObject(res); memErr != nil {
+				if err := m.raiseObj(memErr); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(res); err != nil {
+				return err
+			}
+			continue
+
+		case code.OpCallMethodSpread:
+			nameIdx := int(code.ReadUint16(ins[frame.ip+1:]))
+			numArgs := int(ins[frame.ip+3])
+			frame.ip += 3
+
+			nameObj, ok := m.constants[nameIdx].(*object.String)
+			if !ok {
+				if err := m.raiseObj(&object.Error{Message: "member name must be string constant"}); err != nil {
+					return err
+				}
+				continue
+			}
+
+			rawArgs := make([]object.Object, numArgs)
+			for i := numArgs - 1; i >= 0; i-- {
+				rawArgs[i] = m.pop()
+			}
+			args, errObj := m.expandSpreadArgs(rawArgs)
+			if errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			recv := m.pop()
+
+			if d, ok := recv.(*object.Dict); ok {
+				hk, ok := object.HashKeyOf(nameObj)
+				if !ok {
+					if err := m.raiseObj(&object.Error{Message: "invalid member key"}); err != nil {
+						return err
+					}
+					continue
+				}
+				if pair, exists := d.Pairs[object.HashKeyString(hk)]; exists {
+					if err := m.callWithArgs(pair.Value, args); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+
+			res := applyMethod(nameObj.Value, recv, args)
+			if errObj, ok := res.(*object.Error); ok {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
+			if memErr := m.chargeObject(res); memErr != nil {
+				if err := m.raiseObj(memErr); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := m.tryPush(res); err != nil {
+				return err
+			}
 			continue
 
 		case code.OpDefer:
@@ -1003,6 +1934,27 @@ func (m *VM) run(stopFrames int) error {
 				args[i] = m.pop()
 			}
 			fn := m.pop()
+
+			frame.defers = append(frame.defers, deferredCall{fn: fn, args: args})
+			continue
+
+		case code.OpDeferSpread:
+			argc := int(ins[frame.ip+1])
+			frame.ip += 1
+
+			rawArgs := make([]object.Object, argc)
+			for i := argc - 1; i >= 0; i-- {
+				rawArgs[i] = m.pop()
+			}
+			fn := m.pop()
+
+			args, errObj := m.expandSpreadArgs(rawArgs)
+			if errObj != nil {
+				if err := m.raiseObj(errObj); err != nil {
+					return err
+				}
+				continue
+			}
 
 			frame.defers = append(frame.defers, deferredCall{fn: fn, args: args})
 			continue
@@ -1063,11 +2015,183 @@ func (m *VM) runDefers(frame *Frame) error {
 	return nil
 }
 
-func (m *VM) applyFunction(fn object.Object, args []object.Object) (object.Object, error) {
-	if b, ok := fn.(*object.Builtin); ok {
+func (m *VM) expandSpreadArgs(rawArgs []object.Object) ([]object.Object, *object.Error) {
+	if len(rawArgs) == 0 {
+		return nil, nil
+	}
+	out := make([]object.Object, 0, len(rawArgs))
+	for _, arg := range rawArgs {
+		spread, ok := arg.(*object.Spread)
+		if !ok {
+			out = append(out, arg)
+			continue
+		}
+
+		val := spread.Value
+		switch v := val.(type) {
+		case *object.Tuple:
+			out = append(out, v.Elements...)
+		case *object.Array:
+			out = append(out, v.Elements...)
+		default:
+			typeName := "<nil>"
+			if val != nil {
+				typeName = string(val.Type())
+			}
+			return nil, &object.Error{Message: fmt.Sprintf("cannot spread %s in call arguments", typeName)}
+		}
+	}
+	return out, nil
+}
+
+func (m *VM) callWithArgs(callee object.Object, args []object.Object) error {
+	if b, ok := callee.(*object.Builtin); ok {
 		res := b.Fn(args...)
 		if errObj, ok := res.(*object.Error); ok {
 			if b == builtins[builtinIndex["error"]] {
+				if errObj.Stack == "" {
+					errObj.Stack = m.formatStackTrace(errObj.Message)
+				}
+				if memErr := m.chargeMemory(object.CostError()); memErr != nil {
+					if err := m.raiseObj(memErr); err != nil {
+						return err
+					}
+					return nil
+				}
+				if err := m.tryPush(errObj); err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := m.raiseObj(errObj); err != nil {
+				return err
+			}
+			return nil
+		}
+		if b == builtins[builtinIndex["sort"]] {
+			if arr, ok := res.(*object.Array); ok {
+				extra := int64(0)
+				for _, el := range arr.Elements {
+					if s, ok := el.(*object.String); ok {
+						extra += object.CostStringBytes(len(s.Value))
+					}
+				}
+				if extra > 0 {
+					if memErr := m.chargeMemory(extra); memErr != nil {
+						if err := m.raiseObj(memErr); err != nil {
+							return err
+						}
+						return nil
+					}
+				}
+			}
+		}
+		if memErr := m.chargeObject(res); memErr != nil {
+			if err := m.raiseObj(memErr); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := m.tryPush(res); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	cl, ok := callee.(*object.Closure)
+	if !ok {
+		typeName := "<nil>"
+		if callee != nil {
+			typeName = string(callee.Type())
+		}
+		if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("attempted to call non-function: %s", typeName)}); err != nil {
+			return err
+		}
+		return nil
+	}
+	fn := cl.Fn
+	if len(args) != fn.NumParameters {
+		if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("wrong number of arguments: expected %d, got %d", fn.NumParameters, len(args))}); err != nil {
+			return err
+		}
+		return nil
+	}
+	if m.maxRecursion > 0 && m.framesIndex >= m.maxRecursion+1 {
+		if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("max recursion depth exceeded (%d)", m.maxRecursion)}); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := m.tryPush(callee); err != nil {
+		return err
+	}
+	for _, arg := range args {
+		if err := m.tryPush(arg); err != nil {
+			return err
+		}
+	}
+
+	basePointer := m.sp - len(args)
+	newFrame := NewFrame(cl, basePointer)
+	m.pushFrame(newFrame)
+	m.sp = basePointer + fn.NumLocals
+	return nil
+}
+
+func (m *VM) runBuiltinMap(args []object.Object) (object.Object, bool, error) {
+	if len(args) != 2 {
+		return &object.Error{Message: fmt.Sprintf("wrong number of arguments: expected 2, got %d", len(args))}, true, nil
+	}
+	fn := args[0]
+	arr, ok := args[1].(*object.Array)
+	if !ok {
+		return &object.Error{Message: "map() second argument must be ARRAY"}, true, nil
+	}
+	switch fn.(type) {
+	case *object.Builtin, *object.Closure:
+	default:
+		return &object.Error{Message: "map() first argument must be FUNCTION"}, true, nil
+	}
+
+	out := make([]object.Object, len(arr.Elements))
+	for i, el := range arr.Elements {
+		res, err := m.applyFunction(fn, []object.Object{el})
+		if err != nil {
+			return nil, false, err
+		}
+		if res == nil {
+			return nil, false, nil
+		}
+		if errObj, ok := res.(*object.Error); ok && !errObj.IsValue {
+			if err := m.raiseObj(errObj); err != nil {
+				return nil, false, err
+			}
+			return nil, false, nil
+		}
+		out[i] = res
+	}
+	return &object.Array{Elements: out}, true, nil
+}
+
+func (m *VM) applyFunction(fn object.Object, args []object.Object) (object.Object, error) {
+	if b, ok := fn.(*object.Builtin); ok {
+		if b == builtins[builtinIndex["map"]] {
+			res, ok, err := m.runBuiltinMap(args)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, nil
+			}
+			return res, nil
+		}
+		res := b.Fn(args...)
+		if errObj, ok := res.(*object.Error); ok {
+			if b == builtins[builtinIndex["error"]] {
+				if errObj.Stack == "" {
+					errObj.Stack = m.formatStackTrace(errObj.Message)
+				}
 				return errObj, nil
 			}
 			if err := m.raiseObj(errObj); err != nil {
@@ -1092,6 +2216,12 @@ func (m *VM) applyFunction(fn object.Object, args []object.Object) (object.Objec
 
 	if len(args) != cl.Fn.NumParameters {
 		if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("wrong number of arguments: expected %d, got %d", cl.Fn.NumParameters, len(args))}); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if m.maxRecursion > 0 && m.framesIndex >= m.maxRecursion+1 {
+		if err := m.raiseObj(&object.Error{Message: fmt.Sprintf("max recursion depth exceeded (%d)", m.maxRecursion)}); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -1166,6 +2296,11 @@ func (m *VM) formatStackTrace(message string) string {
 func (m *VM) raiseObj(errObj *object.Error) error {
 	if errObj == nil {
 		return nil
+	}
+	if errObj.Code != limits.MemoryErrorCode {
+		if memErr := m.chargeMemory(object.CostError()); memErr != nil {
+			errObj = memErr
+		}
 	}
 	if errObj.Stack == "" {
 		errObj.Stack = m.formatStackTrace(errObj.Message)
@@ -1244,159 +2379,48 @@ func (m *VM) raiseObj(errObj *object.Error) error {
 	return errors.New(errObj.Stack)
 }
 
-func (m *VM) execBinaryNumericOp(op code.Opcode) error {
+func (m *VM) execBinaryOp(op code.Opcode) error {
 	right := m.pop()
 	left := m.pop()
 
-	li, lok := left.(*object.Integer)
-	ri, rok := right.(*object.Integer)
-	if lok && rok {
-		var res int64
-		switch op {
-		case code.OpAdd:
-			res = li.Value + ri.Value
-		case code.OpSub:
-			res = li.Value - ri.Value
-		case code.OpMul:
-			res = li.Value * ri.Value
-		case code.OpDiv:
-			if ri.Value == 0 {
-				return fmt.Errorf("division by zero")
+	res, err := semantics.BinaryOp(opString(op), left, right)
+	if err != nil {
+		return err
+	}
+	if s, ok := res.(*object.String); ok {
+		if errObj := m.chargeMemory(object.CostStringBytes(len(s.Value))); errObj != nil {
+			if err := m.raiseObj(errObj); err != nil {
+				return err
 			}
-			res = li.Value / ri.Value
-		case code.OpMod:
-			if ri.Value == 0 {
-				return fmt.Errorf("modulo by zero")
-			}
-			res = li.Value % ri.Value
-		default:
-			return fmt.Errorf("unknown integer op: %d", op)
-		}
-		return m.push(&object.Integer{Value: res})
-	}
-
-	lf, lok := left.(*object.Float)
-	rf, rok := right.(*object.Float)
-	if !lok {
-		if li, ok := left.(*object.Integer); ok {
-			lf = &object.Float{Value: float64(li.Value)}
-			lok = true
+			return nil
 		}
 	}
-	if !rok {
-		if ri, ok := right.(*object.Integer); ok {
-			rf = &object.Float{Value: float64(ri.Value)}
-			rok = true
-		}
-	}
-	if !lok || !rok {
-		return fmt.Errorf("numeric op on non-numbers: %s %s", left.Type(), right.Type())
-	}
-
-	switch op {
-	case code.OpAdd:
-		return m.push(&object.Float{Value: lf.Value + rf.Value})
-	case code.OpSub:
-		return m.push(&object.Float{Value: lf.Value - rf.Value})
-	case code.OpMul:
-		return m.push(&object.Float{Value: lf.Value * rf.Value})
-	case code.OpDiv:
-		if rf.Value == 0 {
-			return fmt.Errorf("division by zero")
-		}
-		return m.push(&object.Float{Value: lf.Value / rf.Value})
-	case code.OpMod:
-		return fmt.Errorf("modulo requires INTEGER operands")
-	default:
-		return fmt.Errorf("unknown numeric op: %d", op)
-	}
+	return m.push(res)
 }
 
 func (m *VM) execComparison(op code.Opcode) error {
 	right := m.pop()
 	left := m.pop()
 
-	if li, ok := left.(*object.Integer); ok {
-		if ri, ok := right.(*object.Integer); ok {
-			var b bool
-			switch op {
-			case code.OpEqual:
-				b = li.Value == ri.Value
-			case code.OpNotEqual:
-				b = li.Value != ri.Value
-			case code.OpGreaterThan:
-				b = li.Value > ri.Value
-			}
-			return m.push(nativeBool(b))
-		}
+	b, err := semantics.Compare(opString(op), left, right)
+	if err != nil {
+		return err
 	}
-
-	if isNumber(left) && isNumber(right) {
-		lf := toFloat(left)
-		rf := toFloat(right)
-		var b bool
-		switch op {
-		case code.OpEqual:
-			b = lf == rf
-		case code.OpNotEqual:
-			b = lf != rf
-		case code.OpGreaterThan:
-			b = lf > rf
-		default:
-			return fmt.Errorf("unknown numeric comparison op")
-		}
-		return m.push(nativeBool(b))
-	}
-
-	if lb, ok := left.(*object.Boolean); ok {
-		rb, ok := right.(*object.Boolean)
-		if !ok {
-			return fmt.Errorf("comparison type mismatch: %s vs %s", left.Type(), right.Type())
-		}
-		var b bool
-		switch op {
-		case code.OpEqual:
-			b = lb.Value == rb.Value
-		case code.OpNotEqual:
-			b = lb.Value != rb.Value
-		default:
-			return fmt.Errorf("unsupported boolean comparison op")
-		}
-		return m.push(nativeBool(b))
-	}
-
-	return fmt.Errorf("unsupported comparison types: %s and %s", left.Type(), right.Type())
+	return m.push(nativeBool(b))
 }
 
-func isNumber(o object.Object) bool {
-	switch o.(type) {
-	case *object.Integer, *object.Float:
-		return true
-	default:
-		return false
+func (m *VM) execIn() error {
+	right := m.pop()
+	left := m.pop()
+	b, err := semantics.InOp(left, right)
+	if err != nil {
+		return err
 	}
-}
-
-func toFloat(o object.Object) float64 {
-	switch v := o.(type) {
-	case *object.Float:
-		return v.Value
-	case *object.Integer:
-		return float64(v.Value)
-	default:
-		return 0
-	}
+	return m.push(nativeBool(b))
 }
 
 func isTruthy(o object.Object) bool {
-	switch v := o.(type) {
-	case *object.Boolean:
-		return v.Value
-	case *object.Nil:
-		return false
-	default:
-		return true
-	}
+	return semantics.IsTruthy(o)
 }
 
 func nativeBool(b bool) object.Object {
@@ -1404,4 +2428,92 @@ func nativeBool(b bool) object.Object {
 		return &object.Boolean{Value: true}
 	}
 	return &object.Boolean{Value: false}
+}
+
+func activeTryCatchIP(ins code.Instructions, ip int) (int, bool) {
+	stack := []int{}
+	for i := 0; i < len(ins) && i <= ip; {
+		op := code.Opcode(ins[i])
+		def, ok := code.Lookup(op)
+		if !ok {
+			i++
+			continue
+		}
+		operands, read := code.ReadOperands(def, ins[i+1:])
+		switch op {
+		case code.OpTry:
+			if len(operands) > 0 {
+				stack = append(stack, operands[0])
+			}
+		case code.OpEndTry:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		i += 1 + read
+	}
+	if len(stack) == 0 {
+		return 0, false
+	}
+	return stack[len(stack)-1], true
+}
+
+func firstTryCatchIP(ins code.Instructions) (int, bool) {
+	for i := 0; i < len(ins); {
+		op := code.Opcode(ins[i])
+		def, ok := code.Lookup(op)
+		if !ok {
+			i++
+			continue
+		}
+		operands, read := code.ReadOperands(def, ins[i+1:])
+		if op == code.OpTry && len(operands) > 0 {
+			return operands[0], true
+		}
+		i += 1 + read
+	}
+	return 0, false
+}
+
+func opString(op code.Opcode) string {
+	switch op {
+	case code.OpAdd:
+		return "+"
+	case code.OpSub:
+		return "-"
+	case code.OpMul:
+		return "*"
+	case code.OpDiv:
+		return "/"
+	case code.OpMod:
+		return "%"
+	case code.OpBitOr:
+		return "|"
+	case code.OpBitAnd:
+		return "&"
+	case code.OpBitXor:
+		return "^"
+	case code.OpShl:
+		return "<<"
+	case code.OpShr:
+		return ">>"
+	case code.OpEqual:
+		return "=="
+	case code.OpNotEqual:
+		return "!="
+	case code.OpIs:
+		return "is"
+	case code.OpGreaterThan:
+		return ">"
+	case code.OpLessThan:
+		return "<"
+	case code.OpLessEqual:
+		return "<="
+	case code.OpGreaterEqual:
+		return ">="
+	case code.OpIn:
+		return "in"
+	default:
+		return fmt.Sprintf("op(%d)", op)
+	}
 }

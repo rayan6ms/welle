@@ -1,0 +1,7 @@
+try { // try-header
+  work()
+} catch (e) { // catch-header
+  handle(e)
+} finally { // finally-header
+  cleanup()
+}

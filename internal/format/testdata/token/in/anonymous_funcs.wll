@@ -1,0 +1,2 @@
+f=func (x,y){return x+1}
+print((func(x){return x*2})(21))

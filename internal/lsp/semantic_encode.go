@@ -16,7 +16,6 @@ func EncodeSemanticTokens(toks []SemTok) []uint32 {
 	prevCol := 1
 
 	for _, t := range toks {
-		// LSP is 0-based internally, but we store 1-based. Convert here.
 		line0 := t.Line - 1
 		col0 := t.Col - 1
 

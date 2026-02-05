@@ -77,3 +77,20 @@ func (st *SymbolTable) Resolve(name string) (Symbol, bool) {
 	free := st.defineFree(outerSym)
 	return free, true
 }
+
+func (st *SymbolTable) ResolveCurrent(name string) (Symbol, bool) {
+	sym, ok := st.store[name]
+	if !ok {
+		return Symbol{}, false
+	}
+	if st.Outer == nil {
+		if sym.Scope == GlobalScope {
+			return sym, true
+		}
+		return Symbol{}, false
+	}
+	if sym.Scope == LocalScope {
+		return sym, true
+	}
+	return Symbol{}, false
+}

@@ -170,6 +170,8 @@ func firstTokenOfStmt(st ast.Statement) token.Token {
 		return n.Token
 	case *ast.ContinueStatement:
 		return n.Token
+	case *ast.PassStatement:
+		return n.Token
 	case *ast.ImportStatement:
 		return n.Token
 	case *ast.FromImportStatement:
@@ -232,8 +234,21 @@ func (r *Runner) walkStmt(st ast.Statement) {
 		r.walkExpr(n.Object)
 		r.walkExpr(n.Value)
 
+	case *ast.DestructureAssignStatement:
+		for _, t := range n.Targets {
+			if t == nil || t.Name == nil || t.Name.Value == "_" {
+				continue
+			}
+			if r.sc.lookupHere(t.Name.Value) == nil {
+				r.declare(t.Name.Value, t.Name.Token, kindVar)
+			}
+		}
+		r.walkExpr(n.Value)
+
 	case *ast.ReturnStatement:
-		r.walkExpr(n.ReturnValue)
+		for _, rv := range n.ReturnValues {
+			r.walkExpr(rv)
+		}
 
 	case *ast.DeferStatement:
 		r.walkExpr(n.Call)
@@ -244,11 +259,16 @@ func (r *Runner) walkStmt(st ast.Statement) {
 	case *ast.ExpressionStatement:
 		r.walkExpr(n.Expression)
 
+	case *ast.PassStatement:
+		return
+
 	case *ast.IfStatement:
 		r.walkExpr(n.Condition)
-		r.walkBlock(n.Consequence)
+		if n.Consequence != nil {
+			r.walkStmt(n.Consequence)
+		}
 		if n.Alternative != nil {
-			r.walkBlock(n.Alternative)
+			r.walkStmt(n.Alternative)
 		}
 
 	case *ast.WhileStatement:
@@ -271,7 +291,14 @@ func (r *Runner) walkStmt(st ast.Statement) {
 
 	case *ast.ForInStatement:
 		r.push()
-		if n.Var != nil {
+		if n.Destruct {
+			if n.Key != nil && n.Key.Value != "_" {
+				r.declare(n.Key.Value, n.Key.Token, kindVar)
+			}
+			if n.Value != nil && n.Value.Value != "_" {
+				r.declare(n.Value.Value, n.Value.Token, kindVar)
+			}
+		} else if n.Var != nil {
 			r.declare(n.Var.Value, n.Var.Token, kindVar)
 		}
 		r.walkExpr(n.Iterable)
@@ -344,6 +371,16 @@ func (r *Runner) walkExpr(e ast.Expression) {
 		r.walkExpr(n.Left)
 		r.walkExpr(n.Right)
 
+	case *ast.ConditionalExpression:
+		r.walkExpr(n.Cond)
+		r.walkExpr(n.Then)
+		r.walkExpr(n.Else)
+
+	case *ast.CondExpr:
+		r.walkExpr(n.Cond)
+		r.walkExpr(n.Then)
+		r.walkExpr(n.Else)
+
 	case *ast.PrefixExpression:
 		r.walkExpr(n.Right)
 
@@ -352,6 +389,9 @@ func (r *Runner) walkExpr(e ast.Expression) {
 		for _, a := range n.Arguments {
 			r.walkExpr(a)
 		}
+
+	case *ast.SpreadExpression:
+		r.walkExpr(n.Value)
 
 	case *ast.MemberExpression:
 		r.walkExpr(n.Object)
@@ -364,14 +404,29 @@ func (r *Runner) walkExpr(e ast.Expression) {
 		r.walkExpr(n.Left)
 		r.walkExpr(n.Low)
 		r.walkExpr(n.High)
+		r.walkExpr(n.Step)
 
 	case *ast.ListLiteral:
 		for _, el := range n.Elements {
 			r.walkExpr(el)
 		}
 
+	case *ast.ListComprehension:
+		r.walkExpr(n.Seq)
+		r.push()
+		if n.Var != nil {
+			r.declare(n.Var.Value, n.Var.Token, kindVar)
+		}
+		r.walkExpr(n.Filter)
+		r.walkExpr(n.Elem)
+		r.pop()
+
 	case *ast.DictLiteral:
 		for _, p := range n.Pairs {
+			if p.Shorthand != nil {
+				r.walkExpr(p.Shorthand)
+				continue
+			}
 			r.walkExpr(p.Key)
 			r.walkExpr(p.Value)
 		}
@@ -389,8 +444,40 @@ func (r *Runner) walkExpr(e ast.Expression) {
 		}
 		r.walkExpr(n.Default)
 
+	case *ast.FunctionLiteral:
+		r.push()
+		for _, p := range n.Parameters {
+			if p != nil {
+				r.declare(p.Value, p.Token, kindParam)
+			}
+		}
+		r.walkBlockWithScope(n.Body)
+		r.pop()
+
+	case *ast.TemplateLiteral:
+		r.walkExpr(n.Tag)
+		for _, ex := range n.Exprs {
+			r.walkExpr(ex)
+		}
+
 	case *ast.BooleanLiteral, *ast.IntegerLiteral, *ast.StringLiteral:
 		return
+
+	case *ast.AssignExpression:
+		switch left := n.Left.(type) {
+		case *ast.Identifier:
+			if r.sc.lookupHere(left.Value) == nil {
+				r.declare(left.Value, left.Token, kindVar)
+			}
+		case *ast.IndexExpression:
+			r.walkExpr(left.Left)
+			r.walkExpr(left.Index)
+		case *ast.MemberExpression:
+			r.walkExpr(left.Object)
+		default:
+			// ignore
+		}
+		r.walkExpr(n.Value)
 
 	default:
 	}

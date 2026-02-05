@@ -1,5 +1,15 @@
 # Formatting Verification
 
+Welle ships two formatting modes:
+- Default token-based formatter (`internal/format`), used by `welle fmt` with no flags.
+- AST-aware formatter (`internal/format/astfmt`), enabled with `welle fmt --ast` (experimental).
+
+### Comment and Blank-Line Preservation (AST mode)
+- Line (`//`) and block (`/* */`) comments are preserved and kept in relative position.
+- Inline comments on the same line as code stay on that line when possible.
+- Blank lines between statement “paragraphs” are preserved (collapsed to a single blank line).
+- Limitations: multi-line string literals are emitted as-is and can affect subsequent line/column tracking.
+
 ## VS Code Smoke Test
 1. Build the language server:
    - `go build ./cmd/welle-lsp`

@@ -1,0 +1,5 @@
+// expect: ok
+// expect: stdout "alpha\nbeta\n"
+
+print("alpha")
+print("beta")

@@ -1,0 +1,6 @@
+name="Alice"
+age=25
+person=#{name,age,"role": "admin"}
+x=1
+y=(z:=x+2)+10
+if ((n:=len([1,2,3]))>0){print(n)}

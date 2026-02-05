@@ -1,0 +1,11 @@
+/* block lead */
+x = 1 // trailing
+// between
+y = 2
+
+if (x > 0) { // if trailing
+  // inside
+  y = 3
+}
+// after block
+if (y) { return y } // after brace

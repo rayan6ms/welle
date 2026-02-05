@@ -115,6 +115,103 @@ func TestFormat_UnaryMinusAndCommas(t *testing.T) {
 	}
 }
 
+func TestFormat_UnaryBang(t *testing.T) {
+	input := "x=!a\ny=!!a\nz=!(a and b)\nw=!f(x)\nv=!a==b\n"
+	want := "x = !a\ny = !!a\nz = !(a and b)\nw = !f(x)\nv = !a == b\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_BitwiseOperators(t *testing.T) {
+	input := "x=1|2\ny=1&2\nz=1^2\ns=1<<2\nt=1>>2\nu=~x\nv=~(1|2)\n"
+	want := "x = 1 | 2\ny = 1 & 2\nz = 1 ^ 2\ns = 1 << 2\nt = 1 >> 2\nu = ~x\nv = ~(1 | 2)\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_InOperator(t *testing.T) {
+	input := "x=1 in a\ny=1 in a and b\nz=1 in a or b\n"
+	want := "x = 1 in a\ny = 1 in a and b\nz = 1 in a or b\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_IsOperatorAndTemplate(t *testing.T) {
+	input := "x=1 is 1\ny=tag t\"a=${x}\"\n"
+	want := "x = 1 is 1\ny = tag t\"a=${x}\"\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+}
+
+func TestFormat_DictUpdateAssign(t *testing.T) {
+	input := "d|=other\n"
+	want := "d |= other\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
 func TestFormat_SpacingAroundParensAndBraces(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -164,6 +261,48 @@ func TestFormat_SpacingAroundParensAndBraces(t *testing.T) {
 	}
 }
 
+func TestFormat_CompoundAssignments(t *testing.T) {
+	input := "x+=1\na[i]-=2\nd.x*=3\n"
+	want := "x += 1\na[i] -= 2\nd.x *= 3\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_ForInDestructure(t *testing.T) {
+	input := "for(k,_ )in d{print(k)}\n"
+	want := "for (k, _) in d { print(k) }\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
 func TestFormat_StringLinesPreserved(t *testing.T) {
 	input := "print(\"121: \", x)\nthrow \"assert failed: \" + label\n"
 	formatted, err := Format(input, Options{})
@@ -172,6 +311,68 @@ func TestFormat_StringLinesPreserved(t *testing.T) {
 	}
 	if formatted != input {
 		t.Fatalf("expected string lines to remain identical:\nwant: %q\ngot:  %q", input, formatted)
+	}
+}
+
+func TestFormat_FunctionLiterals(t *testing.T) {
+	input := "f=func (x,y){return x+1}\nprint((func(x){return x*2})(21))\n"
+	want := "f = func(x, y) { return x + 1 }\nprint((func(x) { return x * 2 })(21))\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_TuplesAndReturnList(t *testing.T) {
+	input := "t=(1,2)\nreturn 1,2\n(a,b)=(3,4)\n"
+	want := "t = (1, 2)\nreturn 1, 2\n(a, b) = (3, 4)\n"
+
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if formatted != want {
+		t.Fatalf("unexpected formatting:\nwant: %q\ngot:  %q", want, formatted)
+	}
+
+	reformatted, err := Format(want, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error on reformat: %v", err)
+	}
+	if reformatted != want {
+		t.Fatalf("format not idempotent:\nwant: %q\ngot:  %q", want, reformatted)
+	}
+}
+
+func TestFormat_NumberLiteralsPreserved(t *testing.T) {
+	input := "x=0xFF_FF\ny=1_2.3_4\nz=1e3\nw=0b1010\n"
+	formatted, err := Format(input, Options{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(formatted, "x = 0xFF_FF") {
+		t.Fatalf("expected hex literal preserved: %q", formatted)
+	}
+	if !strings.Contains(formatted, "y = 1_2.3_4") {
+		t.Fatalf("expected float literal preserved: %q", formatted)
+	}
+	if !strings.Contains(formatted, "z = 1e3") {
+		t.Fatalf("expected exponent literal preserved: %q", formatted)
+	}
+	if !strings.Contains(formatted, "w = 0b1010") {
+		t.Fatalf("expected binary literal preserved: %q", formatted)
 	}
 }
 
