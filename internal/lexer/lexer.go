@@ -2,7 +2,6 @@ package lexer
 
 import (
 	"strings"
-	"unicode"
 
 	"welle/internal/token"
 )
@@ -101,32 +100,109 @@ func (l *Lexer) NextToken() token.Token {
 		l.readChar()
 		return tok
 	case ':':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.WALRUS, ":=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.COLON, ":", startLine, startCol)
 		l.readChar()
 		return tok
+	case '?':
+		if l.peekChar() == '?' {
+			ch := l.ch
+			l.readChar()
+			lit := string([]byte{ch, l.ch})
+			tok := l.newToken(token.NULLISH, lit, startLine, startCol)
+			l.readChar()
+			return tok
+		}
+		tok := l.newToken(token.QUESTION, "?", startLine, startCol)
+		l.readChar()
+		return tok
 	case '.':
+		if l.peekChar() == '.' && l.peekSecondChar() == '.' {
+			tok := l.newToken(token.ELLIPSIS, "...", startLine, startCol)
+			l.readChar()
+			l.readChar()
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.DOT, ".", startLine, startCol)
 		l.readChar()
 		return tok
 
 	case '+':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.PLUS_ASSIGN, "+=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.PLUS, "+", startLine, startCol)
 		l.readChar()
 		return tok
 	case '-':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.MINUS_ASSIGN, "-=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.MINUS, "-", startLine, startCol)
 		l.readChar()
 		return tok
 	case '*':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.STAR_ASSIGN, "*=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.STAR, "*", startLine, startCol)
 		l.readChar()
 		return tok
 	case '%':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.PERCENT_ASSIGN, "%=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.PERCENT, "%", startLine, startCol)
+		l.readChar()
+		return tok
+	case '|':
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.BITOR_ASSIGN, "|=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
+		tok := l.newToken(token.BITOR, "|", startLine, startCol)
+		l.readChar()
+		return tok
+	case '&':
+		tok := l.newToken(token.BITAND, "&", startLine, startCol)
+		l.readChar()
+		return tok
+	case '^':
+		tok := l.newToken(token.BITXOR, "^", startLine, startCol)
+		l.readChar()
+		return tok
+	case '~':
+		tok := l.newToken(token.BITNOT, "~", startLine, startCol)
 		l.readChar()
 		return tok
 	case '/':
 		// We already handled // comments above
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok := l.newToken(token.SLASH_ASSIGN, "/=", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		tok := l.newToken(token.SLASH, "/", startLine, startCol)
 		l.readChar()
 		return tok
@@ -153,12 +229,17 @@ func (l *Lexer) NextToken() token.Token {
 			l.readChar()
 			return tok
 		}
-		// '!' alone not supported in v0.1
-		tok := l.newToken(token.ILLEGAL, "!", startLine, startCol)
+		tok := l.newToken(token.BANG, "!", startLine, startCol)
 		l.readChar()
 		return tok
 
 	case '<':
+		if l.peekChar() == '<' {
+			l.readChar()
+			tok := l.newToken(token.SHL, "<<", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
@@ -172,6 +253,12 @@ func (l *Lexer) NextToken() token.Token {
 		return tok
 
 	case '>':
+		if l.peekChar() == '>' {
+			l.readChar()
+			tok := l.newToken(token.SHR, ">>", startLine, startCol)
+			l.readChar()
+			return tok
+		}
 		if l.peekChar() == '=' {
 			ch := l.ch
 			l.readChar()
@@ -200,7 +287,14 @@ func (l *Lexer) NextToken() token.Token {
 	}
 
 	// Identifiers / keywords
+	if l.ch == '_' && isDigit(l.peekChar()) {
+		lit := l.readInvalidLeadingUnderscoreNumber()
+		return l.newToken(token.ILLEGAL, lit, startLine, startCol)
+	}
 	if isIdentStart(l.ch) {
+		if l.ch == 't' && l.peekChar() == '"' {
+			return l.readTemplateToken(startLine, startCol, startIdx)
+		}
 		lit := l.readIdentifier()
 		tt := token.LookupIdent(lit)
 		return l.newToken(tt, lit, startLine, startCol)
@@ -309,14 +403,50 @@ func (l *Lexer) readIdentifier() string {
 
 func (l *Lexer) readNumber() (string, bool) {
 	start := l.position
-	for isDigit(l.ch) {
+	if l.ch == '0' {
+		switch l.peekChar() {
+		case 'x', 'X':
+			l.readChar()
+			l.readChar()
+			for isHexDigit(l.ch) || l.ch == '_' {
+				l.readChar()
+			}
+			return l.input[start:l.position], false
+		case 'b', 'B':
+			l.readChar()
+			l.readChar()
+			for isBinaryDigit(l.ch) || l.ch == '_' {
+				l.readChar()
+			}
+			return l.input[start:l.position], false
+		case 'o', 'O':
+			l.readChar()
+			l.readChar()
+			for isOctalDigit(l.ch) || l.ch == '_' {
+				l.readChar()
+			}
+			return l.input[start:l.position], false
+		}
+	}
+
+	for isDigit(l.ch) || l.ch == '_' {
 		l.readChar()
 	}
 	isFloat := false
-	if l.ch == '.' && isDigit(l.peekChar()) {
+	if l.ch == '.' && (isDigit(l.peekChar()) || l.peekChar() == '_') {
 		isFloat = true
 		l.readChar()
-		for isDigit(l.ch) {
+		for isDigit(l.ch) || l.ch == '_' {
+			l.readChar()
+		}
+	}
+	if l.ch == 'e' || l.ch == 'E' {
+		isFloat = true
+		l.readChar()
+		if l.ch == '+' || l.ch == '-' {
+			l.readChar()
+		}
+		for isDigit(l.ch) || l.ch == '_' {
 			l.readChar()
 		}
 	}
@@ -421,15 +551,69 @@ func (l *Lexer) readStringToken(startLine, startCol, startIdx int) token.Token {
 	return tok
 }
 
+func (l *Lexer) readTemplateToken(startLine, startCol, startIdx int) token.Token {
+	// Current l.ch == 't' and l.peekChar() == '"'
+	l.readChar() // consume 't'
+	l.readChar() // consume opening quote
+
+	start := l.position
+	for {
+		if l.ch == 0 || l.ch == '\n' {
+			return l.newToken(token.ILLEGAL, "unterminated template", startLine, startCol)
+		}
+		if l.ch == '"' {
+			break
+		}
+		if l.ch == '\\' {
+			// Skip escaped byte to avoid terminating on escaped quote.
+			l.readChar()
+			if l.ch == 0 || l.ch == '\n' {
+				return l.newToken(token.ILLEGAL, "unterminated template", startLine, startCol)
+			}
+			l.readChar()
+			continue
+		}
+		l.readChar()
+	}
+
+	body := l.input[start:l.position]
+	l.readChar() // consume closing quote
+	tok := l.newToken(token.TEMPLATE, body, startLine, startCol)
+	tok.Raw = l.input[startIdx:l.position]
+	return tok
+}
+
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
 }
 
+func isBinaryDigit(ch byte) bool {
+	return ch == '0' || ch == '1'
+}
+
+func isOctalDigit(ch byte) bool {
+	return ch >= '0' && ch <= '7'
+}
+
+func isHexDigit(ch byte) bool {
+	return isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
 func isIdentStart(ch byte) bool {
-	// ASCII letters, underscore; allow unicode letters too if you want (Go can, but byte-based lexer doesn’t).
-	return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= 128 && unicode.IsLetter(rune(ch)))
+	// ASCII letters, underscore; allow any non-ASCII UTF-8 byte as identifier start.
+	// This is byte-based, so non-ASCII identifiers are treated as UTF-8 byte sequences.
+	return ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch >= 128
 }
 
 func isIdentPart(ch byte) bool {
 	return isIdentStart(ch) || isDigit(ch)
+}
+
+func (l *Lexer) readInvalidLeadingUnderscoreNumber() string {
+	start := l.position
+	l.readChar() // consume '_'
+	for isDigit(l.ch) || l.ch == '_' {
+		l.readChar()
+	}
+	return l.input[start:l.position]
 }

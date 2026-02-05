@@ -1,0 +1,3 @@
+import "./cycle_b.wll"
+
+export a = 1

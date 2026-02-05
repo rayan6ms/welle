@@ -62,6 +62,38 @@ func TestSemanticTokensParameterShadowing(t *testing.T) {
 	}
 }
 
+func TestSemanticTokensWalrusDeclaration(t *testing.T) {
+	text := `x = 1
+func f() {
+  x := 2
+  print(x)
+}
+
+func TestSemanticTokensTemplateInterpolationAndIs(t *testing.T) {
+	text := "name = \"x\"\nprint(t\"hi ${name}\" is t\"hi ${name}\")\n"
+	toks := SemanticTokensForText(text)
+
+	if !hasToken(toks, 2, 7, ttString, 0) {
+		t.Fatalf("expected template string token at 2:7")
+	}
+	if !hasToken(toks, 2, 20, ttOperator, 0) {
+		t.Fatalf("expected is operator token at 2:20")
+	}
+	if !hasToken(toks, 2, 14, ttVariable, 0) {
+		t.Fatalf("expected interpolation identifier token at 2:14")
+	}
+}
+`
+
+	toks := SemanticTokensForText(text)
+	if !hasToken(toks, 3, 3, ttVariable, modDecl) {
+		t.Fatalf("expected walrus declaration token at 3:3")
+	}
+	if !hasToken(toks, 4, 9, ttVariable, 0) {
+		t.Fatalf("expected walrus usage token at 4:9")
+	}
+}
+
 func hasToken(toks []SemTok, line, col, typ, mods int) bool {
 	for _, tok := range toks {
 		if tok.Line == line && tok.Col == col && tok.Type == typ && tok.Mods == mods {

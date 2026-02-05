@@ -1,0 +1,4 @@
+// expect: ok
+
+exported = 1
+print(exported)

@@ -1,0 +1,6 @@
+x = !a
+y = !!a
+z = ! (a and b)
+w = ! f(x)
+v = !a==b
+u = not false

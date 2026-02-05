@@ -15,6 +15,7 @@ import (
 	"welle/internal/diag"
 	"welle/internal/evaluator"
 	"welle/internal/format"
+	"welle/internal/format/astfmt"
 	"welle/internal/gfx"
 	"welle/internal/lexer"
 	"welle/internal/lint"
@@ -43,27 +44,43 @@ func main() {
 		runTools(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "test" {
+		runTest(os.Args[2:])
+		return
+	}
 
 	tokensMode := flag.Bool("tokens", false, "print tokens instead of running")
 	astMode := flag.Bool("ast", false, "print AST instead of running")
 	vmMode := flag.Bool("vm", false, "run using bytecode VM")
 	disMode := flag.Bool("dis", false, "dump bytecode instructions and constants")
 	optMode := flag.Bool("O", false, "enable bytecode optimizer")
+	maxRecursion := flag.Int("max-recursion", -1, "max recursion depth (0 = unlimited)")
+	maxSteps := flag.Int64("max-steps", -1, "max VM instruction count (0 = unlimited)")
+	maxMem := flag.Int64("max-mem", -1, "max memory allocation in bytes (0 = unlimited)")
+	maxMemory := flag.Int64("max-memory", -1, "max memory allocation in bytes (0 = unlimited)")
 	flag.Parse()
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-
-	stdRoot := filepath.Join(cwd, "std")
-	if abs, err := filepath.Abs(stdRoot); err == nil {
-		stdRoot = abs
+	defaultStdRoot := filepath.Join(cwd, "std")
+	if abs, err := filepath.Abs(defaultStdRoot); err == nil {
+		defaultStdRoot = abs
 	}
 
 	args := flag.Args()
 	if len(args) == 0 {
-		repl.Start(os.Stdin, os.Stdout, stdRoot)
+		recLimit, stepLimit, memLimit, err := resolveLimits(*maxRecursion, *maxSteps, *maxMem, *maxMemory, nil)
+		if err != nil {
+			fmt.Println("repl error:", err)
+			os.Exit(1)
+		}
+		repl.Start(os.Stdin, os.Stdout, defaultStdRoot, repl.Limits{
+			MaxRecursion: recLimit,
+			MaxSteps:     stepLimit,
+			MaxMemory:    memLimit,
+		})
 		return
 	}
 
@@ -76,6 +93,7 @@ func main() {
 
 	var entrySpec string
 	var projectRoot string
+	var manifest *config.Manifest
 	switch cmd {
 	case "repl":
 		if *tokensMode || *astMode || *disMode {
@@ -86,7 +104,16 @@ func main() {
 			fmt.Println("usage: welle repl")
 			os.Exit(1)
 		}
-		repl.Start(os.Stdin, os.Stdout, stdRoot)
+		recLimit, stepLimit, memLimit, err := resolveLimits(*maxRecursion, *maxSteps, *maxMem, *maxMemory, nil)
+		if err != nil {
+			fmt.Println("repl error:", err)
+			os.Exit(1)
+		}
+		repl.Start(os.Stdin, os.Stdout, defaultStdRoot, repl.Limits{
+			MaxRecursion: recLimit,
+			MaxSteps:     stepLimit,
+			MaxMemory:    memLimit,
+		})
 		return
 	case "run":
 		if len(cmdArgs) > 1 {
@@ -98,7 +125,7 @@ func main() {
 			target = cmdArgs[0]
 		}
 		var err error
-		entrySpec, projectRoot, err = resolveRunTarget(target)
+		entrySpec, projectRoot, manifest, err = resolveRunTarget(target)
 		if err != nil {
 			fmt.Println("run error:", err)
 			os.Exit(1)
@@ -117,7 +144,7 @@ func main() {
 			target = cmdArgs[0]
 		}
 		var err error
-		entrySpec, projectRoot, err = resolveRunTarget(target)
+		entrySpec, projectRoot, manifest, err = resolveRunTarget(target)
 		if err != nil {
 			fmt.Println("gfx error:", err)
 			os.Exit(1)
@@ -127,12 +154,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	extraPaths := []string{cwd}
-	if projectRoot != "" && projectRoot != cwd {
-		extraPaths = append(extraPaths, projectRoot)
+	resolver, err := buildResolver(cwd, projectRoot, manifest)
+	if err != nil {
+		fmt.Println("resolver error:", err)
+		os.Exit(1)
 	}
-	resolver := module.NewResolver(stdRoot, extraPaths)
 	loader := module.NewLoader(resolver)
+	recLimit, stepLimit, memLimit, err := resolveLimits(*maxRecursion, *maxSteps, *maxMem, *maxMemory, manifest)
+	if err != nil {
+		fmt.Println("run error:", err)
+		os.Exit(1)
+	}
 
 	entryFrom := filepath.Join(cwd, "__entry.wll")
 
@@ -194,6 +226,9 @@ func main() {
 			fmt.Println()
 		}
 		m := loader.NewVM(bc, entryPath)
+		m.SetMaxRecursion(recLimit)
+		m.SetMaxSteps(stepLimit)
+		m.SetMaxMemory(memLimit)
 		if err := m.Run(); err != nil {
 			fmt.Println("vm error:", err)
 			os.Exit(1)
@@ -209,6 +244,8 @@ func main() {
 
 	if cmd == "gfx" {
 		runner := evaluator.NewRunner()
+		runner.SetMaxRecursion(recLimit)
+		runner.SetMaxMemory(memLimit)
 		runner.SetResolver(resolver)
 		runner.EnableImports()
 		var env *object.Environment
@@ -264,6 +301,8 @@ func main() {
 	}
 
 	runner := evaluator.NewRunner()
+	runner.SetMaxRecursion(recLimit)
+	runner.SetMaxMemory(memLimit)
 	runner.SetResolver(resolver)
 	runner.EnableImports()
 	res := runner.RunFile(entryPath)
@@ -286,42 +325,150 @@ func isPathSpec(spec string) bool {
 	return strings.Contains(spec, string(os.PathSeparator))
 }
 
-func resolveRunTarget(target string) (string, string, error) {
+func resolveRunTarget(target string) (string, string, *config.Manifest, error) {
 	if !isPathSpec(target) {
-		return target, "", nil
+		projectRoot, man, err := findManifest(".")
+		if err != nil {
+			return "", "", nil, err
+		}
+		return target, projectRoot, man, nil
 	}
 	info, err := os.Stat(target)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", fmt.Errorf("path not found: %s", target)
+			return "", "", nil, fmt.Errorf("path not found: %s", target)
 		}
-		return "", "", err
+		return "", "", nil, err
 	}
 	if !info.IsDir() {
 		absTarget, err := filepath.Abs(target)
 		if err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
-		return absTarget, filepath.Dir(absTarget), nil
+		projectRoot, man, err := findManifest(filepath.Dir(absTarget))
+		if err != nil {
+			return "", "", nil, err
+		}
+		return absTarget, projectRoot, man, nil
 	}
-	projectRoot, err := filepath.Abs(target)
+	startDir, err := filepath.Abs(target)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	manifestPath := filepath.Join(projectRoot, "welle.toml")
-	man, err := config.LoadManifest(manifestPath)
+	projectRoot, man, err := findManifest(startDir)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
+	}
+	if man == nil {
+		return "", "", nil, fmt.Errorf("welle.toml not found in or above %s", startDir)
 	}
 	if strings.TrimSpace(man.Entry) == "" {
-		return "", "", fmt.Errorf("%s: missing entry", manifestPath)
+		return "", "", nil, fmt.Errorf("%s: missing entry", filepath.Join(projectRoot, "welle.toml"))
 	}
 	entryPath := filepath.Join(projectRoot, man.Entry)
 	entryPath, err = filepath.Abs(entryPath)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	return entryPath, projectRoot, nil
+	return entryPath, projectRoot, man, nil
+}
+
+func findManifest(start string) (string, *config.Manifest, error) {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return "", nil, err
+	}
+	for {
+		manifestPath := filepath.Join(dir, "welle.toml")
+		info, err := os.Stat(manifestPath)
+		if err == nil && !info.IsDir() {
+			man, err := config.LoadManifest(manifestPath)
+			if err != nil {
+				return "", nil, err
+			}
+			return dir, man, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", nil, err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", nil, nil
+}
+
+func buildResolver(cwd, projectRoot string, man *config.Manifest) (*module.Resolver, error) {
+	baseRoot := cwd
+	if projectRoot != "" {
+		baseRoot = projectRoot
+	}
+	defaultStdRoot := filepath.Join(baseRoot, "std")
+	if abs, err := filepath.Abs(defaultStdRoot); err == nil {
+		defaultStdRoot = abs
+	}
+
+	stdRoot := defaultStdRoot
+	modulePaths := []string{}
+	if man != nil && projectRoot != "" {
+		var err error
+		stdRoot, modulePaths, err = man.ResolvePaths(projectRoot, defaultStdRoot)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	extraPaths := append([]string{}, modulePaths...)
+	extraPaths = append(extraPaths, cwd)
+	if projectRoot != "" && projectRoot != cwd {
+		extraPaths = append(extraPaths, projectRoot)
+	}
+
+	return module.NewResolver(stdRoot, extraPaths), nil
+}
+
+func resolveLimits(cliRec int, cliSteps int64, cliMem int64, cliMemAlt int64, man *config.Manifest) (int, int64, int64, error) {
+	if cliRec < -1 {
+		return 0, 0, 0, fmt.Errorf("max-recursion must be >= 0")
+	}
+	if cliSteps < -1 {
+		return 0, 0, 0, fmt.Errorf("max-steps must be >= 0")
+	}
+	if cliMem < -1 || cliMemAlt < -1 {
+		return 0, 0, 0, fmt.Errorf("max-mem must be >= 0")
+	}
+	if cliMem >= 0 && cliMemAlt >= 0 && cliMem != cliMemAlt {
+		return 0, 0, 0, fmt.Errorf("max-mem and max-memory differ; use only one")
+	}
+
+	rec := 0
+	if cliRec >= 0 {
+		rec = cliRec
+	} else if man != nil && man.MaxRecursion > 0 {
+		rec = man.MaxRecursion
+	}
+
+	steps := int64(0)
+	if cliSteps >= 0 {
+		steps = cliSteps
+	} else if man != nil && man.MaxSteps > 0 {
+		steps = man.MaxSteps
+	}
+
+	mem := int64(0)
+	cliVal := cliMem
+	if cliVal < 0 {
+		cliVal = cliMemAlt
+	}
+	if cliVal >= 0 {
+		mem = cliVal
+	} else if man != nil && man.MaxMem > 0 {
+		mem = man.MaxMem
+	}
+
+	return rec, steps, mem, nil
 }
 
 func runInit(args []string) {
@@ -385,8 +532,9 @@ func runFmt(args []string) {
 	fs.SetOutput(io.Discard)
 	writeBack := fs.Bool("w", false, "write result to (source) file")
 	indent := fs.String("i", "  ", "indent string")
+	useAST := fs.Bool("ast", false, "use AST-aware formatter (experimental)")
 	if err := fs.Parse(args); err != nil {
-		fmt.Println("usage: welle fmt [-w] [-i <indent>] <path>")
+		fmt.Println("usage: welle fmt [-w] [-i <indent>] [--ast] <path>")
 		os.Exit(1)
 	}
 
@@ -411,7 +559,7 @@ func runFmt(args []string) {
 			fmt.Println("fmt error:", err)
 			os.Exit(1)
 		}
-		formatted, err := format.Format(string(b), format.Options{Indent: *indent})
+		formatted, err := formatWithMode(b, *indent, *useAST)
 		if err != nil {
 			fmt.Println("fmt error:", err)
 			os.Exit(1)
@@ -425,6 +573,17 @@ func runFmt(args []string) {
 		}
 		fmt.Printf("formatted %s\n", path)
 	}
+}
+
+func formatWithMode(src []byte, indent string, useAST bool) (string, error) {
+	if useAST {
+		out, err := astfmt.FormatASTWithIndent(src, indent)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
+	}
+	return format.Format(string(src), format.Options{Indent: indent})
 }
 
 func runLint(args []string) {

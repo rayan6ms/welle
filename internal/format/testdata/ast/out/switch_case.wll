@@ -1,0 +1,10 @@
+switch (x) {
+  case 1, 2 { y = 1 }
+  case 3 {
+    switch (y) {
+      case 9 { z = 1 }
+      default { z = 2 }
+    }
+  }
+  default { y = 0 }
+}

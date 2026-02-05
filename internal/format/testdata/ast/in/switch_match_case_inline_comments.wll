@@ -1,0 +1,17 @@
+switch (x) { // switch-header
+  case 1 { // case-one
+    y = 1
+  }
+  case 2 { // case-two
+    y = 2
+  }
+  default { // case-default
+    y = 0
+  }
+}
+
+match (x) { // match-header
+  case 1 { 1 } // match-case-one
+  case 2 { 2 }
+  default { 0 } // match-default
+}

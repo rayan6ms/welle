@@ -21,7 +21,13 @@ const (
 	prompt2 = "....> "
 )
 
-func Start(in io.Reader, out io.Writer, stdRoot string) {
+type Limits struct {
+	MaxRecursion int
+	MaxSteps     int64
+	MaxMemory    int64
+}
+
+func Start(in io.Reader, out io.Writer, stdRoot string, limits Limits) {
 	scanner := bufio.NewScanner(in)
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -100,6 +106,9 @@ func Start(in io.Reader, out io.Writer, stdRoot string) {
 		}
 		bc := c.Bytecode()
 		m := loader.NewVM(bc, entryPath)
+		m.SetMaxRecursion(limits.MaxRecursion)
+		m.SetMaxSteps(limits.MaxSteps)
+		m.SetMaxMemory(limits.MaxMemory)
 		m.SetGlobals(globals)
 		m.SetModuleCache(moduleCache)
 		if err := m.Run(); err != nil {

@@ -1,0 +1,3 @@
+// expect: error contains "duplicate export"
+
+import "./fixtures/duplicate_export.wll" as dup

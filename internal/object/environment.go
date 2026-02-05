@@ -25,6 +25,11 @@ func (e *Environment) Get(name string) (Object, bool) {
 	return obj, ok
 }
 
+func (e *Environment) GetHere(name string) (Object, bool) {
+	obj, ok := e.store[name]
+	return obj, ok
+}
+
 func (e *Environment) Assign(name string, val Object) (Object, bool) {
 	if _, ok := e.store[name]; ok {
 		e.store[name] = val
