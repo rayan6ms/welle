@@ -60,8 +60,3 @@ func draw() {
   gfx.present(img)
   gfx.end_frame()
 }
-
-setup()
-while (not gfx.should_close()) {
-  draw()
-}
